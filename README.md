@@ -2,11 +2,15 @@
 
 Local-first DJ library pre-processor for organizing a messy recursive source dump into a clean managed DJ library before importing into Serato, Rekordbox, Traktor, Engine DJ, or similar software.
 
-Golden path:
+Happy Path:
 
-```text
-source dump -> genre discovery -> dry run -> process -> managed library -> import into DJ software
-```
+1. Point `dj-sort` at a messy recursive source dump.
+2. Run genre discovery.
+3. Update `genres.yaml` with canonical mappings.
+4. Run a dry run.
+5. Process files into the managed library.
+6. Review duplicate reports.
+7. Import the managed library into DJ software.
 
 ## Features
 
