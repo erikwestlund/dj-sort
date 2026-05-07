@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+
+if ! command -v uv >/dev/null 2>&1; then
+  printf '%s\n' 'uv is required. Install it from https://docs.astral.sh/uv/ and rerun scripts/bootstrap.' >&2
+  exit 1
+fi
+
+uv sync
+uv run python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 'Python 3.12+ is required')"
+uv run python -c "import dj_sort; print(f'dj_sort {dj_sort.__version__}')"
+uv run dj-sort --help >/dev/null
+uv run dj-sort diagnostics --settings settings.example.yaml >/dev/null
+printf '%s\n' 'Environment ready. Try: uv run dj-sort --help'

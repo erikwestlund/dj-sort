@@ -1,0 +1,36 @@
+[project]
+name = "dj-sort"
+version = "0.1.0"
+description = "Local-first DJ library pre-processor"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "mutagen>=1.47.0",
+  "pydantic>=2.7.0",
+  "pyyaml>=6.0.1",
+  "typer>=0.12.0",
+]
+
+[project.scripts]
+dj-sort = "dj_sort.cli:app"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 150
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

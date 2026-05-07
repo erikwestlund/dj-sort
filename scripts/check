@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+scripts/lint
+scripts/test

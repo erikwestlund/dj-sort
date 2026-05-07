@@ -1,0 +1,32 @@
+source_root: /Music/Dump
+library_root: /Music/DJ Library
+processed_source_root: /Music/DJ Processed Source Archive
+database_path: ~/.dj-sort/library.sqlite3
+genre_map_path: ./genres.yaml
+binary_paths:
+  ffmpeg: null
+  ffprobe: null
+  fpcalc: null
+genre_discovery:
+  max_examples_per_genre: 5
+  include_missing_genre: true
+  output_format: text
+recursive: true
+dry_run: true
+limit: null
+source_completion_action: keep
+source_archive_preserve_relative_path: true
+remove_empty_source_dirs: false
+detect_potential_duplicates: true
+strict: false
+bpm_format: integer
+key_format: camelot
+unknown_genre_dir: _Needs Genre
+needs_review_dir: _Needs Review
+quarantine_dir: _Duplicates Review
+write_canonical_genre_to_metadata: true
+omit_missing_filename_parts: true
+filename_template: "{artist} - {title} - {bpm} - {key}.{ext}"
+remove_empty_genre_dirs: false
+genre_consolidation:
+  mappings: {}
