@@ -8,13 +8,7 @@ The tool organizes files into a managed DJ library, normalizes genre metadata, c
 
 Implementation speed matters. The architecture should be clear enough to support rapid iterative development without forcing perfect abstractions too early.
 
-## Golden Path
-
-```text
-source dump -> dry run -> process into managed library -> review reports -> import managed library into DJ software
-```
-
-Typical real-world flow:
+## Happy Path
 
 1. Point `dj-sort` at a messy recursive source dump.
 2. Run `genres discover` to list every unique raw genre value.
