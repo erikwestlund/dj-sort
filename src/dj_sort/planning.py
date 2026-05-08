@@ -115,7 +115,7 @@ def build_plans(settings: Settings, genre_map: GenreMap, limit: int | None = Non
             if skipped_file is not None:
                 skipped.append(skipped_file)
                 continue
-            plans.append(_build_plan(settings, metadata, occupied, genre))
+            plans.append(_build_plan(settings, metadata, occupied, genre, genre_map.is_whitelisted(genre.canonical_genre)))
         except Exception as exc:  # noqa: BLE001 - per-file failures should not abort planning
             skipped.append(SkippedFile(path=path, reason=f"metadata_error: {exc}"))
 
@@ -127,12 +127,15 @@ def _build_plan(
     metadata: TrackMetadata,
     occupied: set[Path],
     genre,
+    is_curated_genre: bool,
 ) -> Plan:
     labels = list(metadata.labels)
     if genre.missing:
         labels.append("Needs Genre")
+    if not genre.missing and not is_curated_genre:
+        labels.append("Uncurated Genre")
 
-    safe_genre = safe_path_part(genre.canonical_genre or settings.unknown_genre_dir)
+    safe_genre = safe_path_part(_target_genre_dir(settings, genre, is_curated_genre))
     filename = _filename(settings, metadata)
     target = settings.library_root / safe_genre / filename
     unique_target = ensure_unique_path(target, occupied, str(metadata.path))
@@ -181,15 +184,6 @@ def _skip_for_filters(
             notes=f"matched blacklist substring: {matched_blacklist}",
         )
 
-    if not genre_map.is_whitelisted(genre.canonical_genre):
-        return SkippedFile(
-            path=metadata.path,
-            reason="genre_not_whitelisted",
-            raw_genre=genre.raw_genre,
-            canonical_genre=genre.canonical_genre,
-            duration_ms=metadata.duration_ms,
-        )
-
     if settings.max_duration_minutes is None or metadata.duration_ms is None:
         return None
 
@@ -226,6 +220,14 @@ def _matched_blacklist_substring(
         if cleaned and cleaned.casefold() in searchable_text:
             return cleaned
     return None
+
+
+def _target_genre_dir(settings: Settings, genre, is_curated_genre: bool) -> str:
+    if genre.missing:
+        return genre.canonical_genre or settings.unknown_genre_dir
+    if not is_curated_genre:
+        return settings.uncurated_genre_dir
+    return genre.canonical_genre or settings.unknown_genre_dir
 
 
 def _filename(settings: Settings, metadata: TrackMetadata) -> str:

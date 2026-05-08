@@ -61,7 +61,7 @@ def test_processing_records_tracked_exclusions(tmp_path: Path) -> None:
             skipped=[
                 SkippedFile(
                     path=source / "Ambient - Long.mp3",
-                    reason="genre_not_whitelisted",
+                    reason="duration_exceeds_max",
                     raw_genre="Ambient",
                     canonical_genre="Ambient",
                     duration_ms=180_000,
@@ -83,7 +83,7 @@ def test_processing_records_tracked_exclusions(tmp_path: Path) -> None:
     assert row["raw_genre"] == "Ambient"
     assert row["canonical_genre"] == "Ambient"
     assert row["duration_ms"] == 180_000
-    assert row["reason"] == "genre_not_whitelisted"
+    assert row["reason"] == "duration_exceeds_max"
 
 
 def test_processing_records_blacklist_exclusion_notes(tmp_path: Path) -> None:

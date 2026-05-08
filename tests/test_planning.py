@@ -6,7 +6,7 @@ from dj_sort.planning import build_plans
 from dj_sort.settings import Settings
 
 
-def test_build_plans_skips_non_whitelisted_genres(tmp_path: Path, monkeypatch) -> None:
+def test_build_plans_routes_non_whitelisted_genres_to_uncurated_dir(tmp_path: Path, monkeypatch) -> None:
     track = tmp_path / "Ambient Track.mp3"
     settings = _settings(tmp_path)
     genre_map_path = tmp_path / "genres.yaml"
@@ -21,10 +21,11 @@ def test_build_plans_skips_non_whitelisted_genres(tmp_path: Path, monkeypatch) -
 
     result = build_plans(settings, genre_map)
 
-    assert result.plans == []
-    assert len(result.skipped) == 1
-    assert result.skipped[0].reason == "genre_not_whitelisted"
-    assert result.skipped[0].canonical_genre == "Ambient"
+    assert result.skipped == []
+    assert len(result.plans) == 1
+    assert result.plans[0].canonical_genre == "Ambient"
+    assert result.plans[0].target_path.parent == settings.library_root / settings.uncurated_genre_dir
+    assert "Uncurated Genre" in result.plans[0].labels
 
 
 def test_build_plans_skips_tracks_over_max_duration(tmp_path: Path, monkeypatch) -> None:

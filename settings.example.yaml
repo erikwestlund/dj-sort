@@ -22,6 +22,7 @@ strict: false
 bpm_format: integer
 key_format: camelot
 unknown_genre_dir: _Needs Genre
+uncurated_genre_dir: _Uncurated Genre
 needs_review_dir: _Needs Review
 quarantine_dir: _Duplicates Review
 write_canonical_genre_to_metadata: true

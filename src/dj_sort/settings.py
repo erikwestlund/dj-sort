@@ -48,6 +48,7 @@ class Settings(BaseModel):
     bpm_format: BpmFormat = "integer"
     key_format: KeyFormat = "camelot"
     unknown_genre_dir: str = "_Needs Genre"
+    uncurated_genre_dir: str = "_Uncurated Genre"
     needs_review_dir: str = "_Needs Review"
     quarantine_dir: str = "_Duplicates Review"
     write_canonical_genre_to_metadata: bool = True
