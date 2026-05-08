@@ -1,6 +1,7 @@
-source_root: /Music/Dump
-library_root: /Music/DJ Library
-processed_source_root: /Music/DJ Processed Source Archive
+unprocessed_music_dir: /Music/DJ Unprocessed
+dj_library_dir: /Music/DJ Library
+uncategorizable_dir: /Music/DJ Uncategorizable
+duplicates_dir: /Music/DJ Duplicates
 database_path: ~/.dj-sort/library.sqlite3
 genre_map_path: ./genres.yaml
 binary_paths:
@@ -14,18 +15,19 @@ genre_discovery:
 recursive: true
 dry_run: true
 limit: null
-source_completion_action: keep
-source_archive_preserve_relative_path: true
-remove_empty_source_dirs: false
 detect_potential_duplicates: true
+duplicate_policy: exact_only
 strict: false
 bpm_format: integer
 key_format: camelot
-unknown_genre_dir: _Needs Genre
-uncurated_genre_dir: _Uncurated Genre
-needs_review_dir: _Needs Review
-quarantine_dir: _Duplicates Review
+missing_genre_dir: Missing Genre
+unmapped_genre_dir: Unmapped Genre
+needs_review_dir: Needs Review
+too_long_dir: Too Long
+blacklisted_dir: Blacklisted
 write_canonical_genre_to_metadata: true
+preserve_original_genre_in_comment: true
+original_genre_comment_prefix: "dj-sort original genre:"
 omit_missing_filename_parts: true
 filename_template: "{artist} - {title} - {bpm} - {key}.{ext}"
 max_duration_minutes: 15

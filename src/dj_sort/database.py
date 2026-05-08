@@ -270,6 +270,13 @@ def update_song_source_cleanup(
         )
 
 
+def delete_song(connection: sqlite3.Connection, song_id: int) -> None:
+    with connection:
+        connection.execute("DELETE FROM song_processing_label WHERE song_id = ?", (song_id,))
+        connection.execute("DELETE FROM song_operation_log WHERE song_id = ?", (song_id,))
+        connection.execute("DELETE FROM song WHERE id = ?", (song_id,))
+
+
 def save_processed_song(
     connection: sqlite3.Connection,
     plan: Plan,

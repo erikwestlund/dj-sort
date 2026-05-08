@@ -45,8 +45,13 @@ def add_report_metadata(data: dict[str, Any], elapsed_seconds: float | None = No
     return data
 
 
-def discover_genres(settings: Settings, genre_map: GenreMap, limit: int | None = None) -> dict[str, Any]:
-    paths, skipped = scan_audio_files(settings.source_root, settings.recursive, limit)
+def discover_genres(
+    settings: Settings,
+    genre_map: GenreMap,
+    limit: int | None = None,
+    source_dir: Path | None = None,
+) -> dict[str, Any]:
+    paths, skipped = scan_audio_files(source_dir or settings.unprocessed_music_dir, settings.recursive, limit)
     max_examples = settings.genre_discovery.max_examples_per_genre
     buckets: dict[str, GenreBucket] = {}
     errors: list[dict[str, str]] = []
@@ -54,7 +59,7 @@ def discover_genres(settings: Settings, genre_map: GenreMap, limit: int | None =
     for path in paths:
         try:
             metadata = read_metadata(path)
-            resolution = genre_map.resolve(metadata.genre, settings.unknown_genre_dir)
+            resolution = genre_map.resolve(metadata.genre, settings.missing_genre_dir)
             raw = resolution.raw_genre if not resolution.missing else "<missing>"
             key = normalize_key(raw)
             bucket = buckets.setdefault(
@@ -62,7 +67,7 @@ def discover_genres(settings: Settings, genre_map: GenreMap, limit: int | None =
                 GenreBucket(
                     raw_genre=raw,
                     normalized_genre=key,
-                    canonical_genre=resolution.canonical_genre or settings.unknown_genre_dir,
+                    canonical_genre=resolution.canonical_genre or settings.missing_genre_dir,
                     mapped=resolution.mapped,
                     missing=resolution.missing,
                 ),

@@ -81,13 +81,13 @@ class PlanningResult:
         }
 
 
-def scan_audio_files(source_root: Path, recursive: bool, limit: int | None) -> tuple[list[Path], list[SkippedFile]]:
-    if not source_root.exists():
-        raise FileNotFoundError(f"Source root does not exist: {source_root}")
-    if not source_root.is_dir():
-        raise NotADirectoryError(f"Source root is not a directory: {source_root}")
+def scan_audio_files(music_dir: Path, recursive: bool, limit: int | None) -> tuple[list[Path], list[SkippedFile]]:
+    if not music_dir.exists():
+        raise FileNotFoundError(f"Music directory does not exist: {music_dir}")
+    if not music_dir.is_dir():
+        raise NotADirectoryError(f"Music directory is not a directory: {music_dir}")
 
-    iterator = source_root.rglob("*") if recursive else source_root.glob("*")
+    iterator = music_dir.rglob("*") if recursive else music_dir.glob("*")
     candidates: list[Path] = []
     skipped: list[SkippedFile] = []
     for path in sorted(iterator):
@@ -103,23 +103,37 @@ def scan_audio_files(source_root: Path, recursive: bool, limit: int | None) -> t
 
 
 def build_plans(settings: Settings, genre_map: GenreMap, limit: int | None = None) -> PlanningResult:
-    paths, skipped = scan_audio_files(settings.source_root, settings.recursive, limit)
+    paths, skipped = scan_audio_files(settings.unprocessed_music_dir, settings.recursive, limit)
     occupied: set[Path] = set()
     plans: list[Plan] = []
 
     for path in paths:
-        try:
-            metadata = read_metadata(path)
-            genre = genre_map.resolve(metadata.genre, settings.unknown_genre_dir)
-            skipped_file = _skip_for_filters(settings, genre_map, metadata, genre)
-            if skipped_file is not None:
-                skipped.append(skipped_file)
-                continue
-            plans.append(_build_plan(settings, metadata, occupied, genre, genre_map.is_whitelisted(genre.canonical_genre)))
-        except Exception as exc:  # noqa: BLE001 - per-file failures should not abort planning
-            skipped.append(SkippedFile(path=path, reason=f"metadata_error: {exc}"))
+        result = build_plan_for_file(settings, genre_map, path, occupied)
+        plans.extend(result.plans)
+        skipped.extend(result.skipped)
 
     return PlanningResult(plans=plans, skipped=skipped)
+
+
+def build_plan_for_file(
+    settings: Settings,
+    genre_map: GenreMap,
+    path: Path,
+    occupied: set[Path] | None = None,
+) -> PlanningResult:
+    occupied = occupied if occupied is not None else set()
+    try:
+        metadata = read_metadata(path)
+        genre = genre_map.resolve(metadata.genre, settings.missing_genre_dir)
+        skipped_file = _skip_for_filters(settings, genre_map, metadata, genre)
+        if skipped_file is not None:
+            return PlanningResult(plans=[], skipped=[skipped_file])
+        return PlanningResult(
+            plans=[_build_plan(settings, metadata, occupied, genre, genre_map.is_whitelisted(genre.canonical_genre))],
+            skipped=[],
+        )
+    except Exception as exc:  # noqa: BLE001 - per-file failures should not abort planning
+        return PlanningResult(plans=[], skipped=[SkippedFile(path=path, reason=f"metadata_error: {exc}")])
 
 
 def _build_plan(
@@ -131,13 +145,12 @@ def _build_plan(
 ) -> Plan:
     labels = list(metadata.labels)
     if genre.missing:
-        labels.append("Needs Genre")
+        labels.append("Missing Genre")
     if not genre.missing and not is_curated_genre:
-        labels.append("Uncurated Genre")
+        labels.append("Unmapped Genre")
 
-    safe_genre = safe_path_part(_target_genre_dir(settings, genre, is_curated_genre))
     filename = _filename(settings, metadata)
-    target = settings.library_root / safe_genre / filename
+    target = _target_dir(settings, genre, is_curated_genre) / filename
     unique_target = ensure_unique_path(target, occupied, str(metadata.path))
 
     return Plan(
@@ -148,7 +161,7 @@ def _build_plan(
         title=metadata.title or "Unknown Title",
         normalized_title=normalize_key(metadata.title or "Unknown Title"),
         raw_genre=genre.raw_genre,
-        canonical_genre=genre.canonical_genre or settings.unknown_genre_dir,
+        canonical_genre=genre.canonical_genre or settings.missing_genre_dir,
         bpm=_format_bpm(metadata.bpm, settings.bpm_format),
         raw_key=metadata.raw_key,
         camelot_key=metadata.camelot_key,
@@ -222,12 +235,12 @@ def _matched_blacklist_substring(
     return None
 
 
-def _target_genre_dir(settings: Settings, genre, is_curated_genre: bool) -> str:
+def _target_dir(settings: Settings, genre, is_curated_genre: bool) -> Path:
     if genre.missing:
-        return genre.canonical_genre or settings.unknown_genre_dir
+        return settings.uncategorizable_dir / safe_path_part(settings.missing_genre_dir)
     if not is_curated_genre:
-        return settings.uncurated_genre_dir
-    return genre.canonical_genre or settings.unknown_genre_dir
+        return settings.uncategorizable_dir / safe_path_part(settings.unmapped_genre_dir)
+    return settings.dj_library_dir / safe_path_part(genre.canonical_genre or settings.missing_genre_dir)
 
 
 def _filename(settings: Settings, metadata: TrackMetadata) -> str:

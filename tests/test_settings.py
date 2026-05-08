@@ -3,13 +3,12 @@ from pathlib import Path
 from dj_sort.settings import load_settings
 
 
-def test_load_settings_defaults_library_root(tmp_path: Path) -> None:
+def test_load_settings_defaults_output_dirs(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.yaml"
     settings_path.write_text(
         "\n".join(
             [
-                f"source_root: {tmp_path / 'source'}",
-                f"processed_source_root: {tmp_path / 'archive'}",
+                f"unprocessed_music_dir: {tmp_path / 'source'}",
             ]
         )
         + "\n",
@@ -18,4 +17,6 @@ def test_load_settings_defaults_library_root(tmp_path: Path) -> None:
 
     settings = load_settings(settings_path)
 
-    assert settings.library_root == Path("~/Music/DJ Library").expanduser()
+    assert settings.dj_library_dir == Path("~/Music/DJ Library").expanduser()
+    assert settings.uncategorizable_dir == Path("~/Music/DJ Uncategorizable").expanduser()
+    assert settings.duplicates_dir == Path("~/Music/DJ Duplicates").expanduser()

@@ -12,9 +12,10 @@ def test_consolidation_dry_run_plans_move(tmp_path: Path) -> None:
     current.parent.mkdir(parents=True)
     current.write_bytes(b"\xff\xfb" + b"audio-data")
     settings = Settings(
-        source_root=tmp_path / "source",
-        library_root=library,
-        processed_source_root=tmp_path / "archive",
+        unprocessed_music_dir=tmp_path / "source",
+        dj_library_dir=library,
+        uncategorizable_dir=tmp_path / "uncategorizable",
+        duplicates_dir=tmp_path / "duplicates",
         database_path=tmp_path / "db.sqlite3",
         genre_map_path=tmp_path / "genres.yaml",
     )
@@ -44,9 +45,10 @@ def test_consolidation_delete_target_removes_file_and_marks_song_deleted(tmp_pat
     current.parent.mkdir(parents=True)
     current.write_bytes(b"\xff\xfb" + b"audio-data")
     settings = Settings(
-        source_root=tmp_path / "source",
-        library_root=library,
-        processed_source_root=tmp_path / "archive",
+        unprocessed_music_dir=tmp_path / "source",
+        dj_library_dir=library,
+        uncategorizable_dir=tmp_path / "uncategorizable",
+        duplicates_dir=tmp_path / "duplicates",
         database_path=tmp_path / "db.sqlite3",
         genre_map_path=tmp_path / "genres.yaml",
         remove_empty_genre_dirs=True,

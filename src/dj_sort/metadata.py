@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from mutagen import File
+from mutagen.id3 import COMM, ID3, ID3NoHeaderError
 
 SUPPORTED_EXTENSIONS = {".mp3", ".flac", ".m4a", ".aac", ".alac", ".wav", ".aiff", ".aif"}
 CAMELot_RE = re.compile(r"^(?:[1-9]|1[0-2])[AB]$", re.IGNORECASE)
@@ -128,14 +129,64 @@ def read_metadata(path: Path) -> TrackMetadata:
     )
 
 
-def write_genre(path: Path, canonical_genre: str) -> None:
+def write_genre(
+    path: Path,
+    canonical_genre: str,
+    original_genre: str | None = None,
+    original_genre_comment_prefix: str = "dj-sort original genre:",
+) -> None:
     if path.suffix.casefold() == ".wav":
         raise ValueError("WAV genre write-back is disabled pending format-specific validation")
     audio = File(path, easy=True)
     if audio is None:
         raise ValueError(f"Unsupported metadata write: {path}")
     audio["genre"] = [canonical_genre]
-    audio.save()
+    comment = original_genre_comment(original_genre, canonical_genre, original_genre_comment_prefix)
+    if comment is None:
+        audio.save()
+        return
+
+    try:
+        _append_easy_comment(audio, comment)
+        audio.save()
+        return
+    except KeyError:
+        audio.save()
+        if path.suffix.casefold() == ".mp3":
+            _append_id3_comment(path, comment)
+            return
+        raise ValueError(f"Comment metadata write is not supported for {path.suffix or 'this file type'}") from None
+
+
+def original_genre_comment(
+    original_genre: str | None,
+    canonical_genre: str,
+    prefix: str = "dj-sort original genre:",
+) -> str | None:
+    if not original_genre:
+        return None
+    cleaned_original = original_genre.strip()
+    cleaned_canonical = canonical_genre.strip()
+    if not cleaned_original or cleaned_original.casefold() == cleaned_canonical.casefold():
+        return None
+    return f"{prefix.rstrip()} {cleaned_original}"
+
+
+def _append_easy_comment(audio: Any, comment: str) -> None:
+    existing = [str(value) for value in audio.get("comment", [])]
+    if comment not in existing:
+        audio["comment"] = [*existing, comment]
+
+
+def _append_id3_comment(path: Path, comment: str) -> None:
+    try:
+        tags = ID3(path)
+    except ID3NoHeaderError:
+        tags = ID3()
+    existing = [frame.text[0] for frame in tags.getall("COMM") if frame.text]
+    if comment not in existing:
+        tags.add(COMM(encoding=3, lang="eng", desc="dj-sort", text=[comment]))
+    tags.save(path)
 
 
 def infer_artist_title(path: Path) -> tuple[str | None, str | None]:

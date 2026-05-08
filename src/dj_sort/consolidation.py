@@ -81,7 +81,7 @@ def consolidate_genres(
 def remove_empty_genre_dirs(settings: Settings, start: Path) -> None:
     if not settings.remove_empty_genre_dirs:
         return
-    library_root = settings.library_root.resolve()
+    library_root = settings.dj_library_dir.resolve()
     current = start.resolve()
     while current != library_root and library_root in current.parents:
         try:
@@ -103,7 +103,7 @@ def _plan_action(
     if delete_target:
         target_path = current_path
     else:
-        target_dir = settings.library_root / safe_path_part(target_genre)
+        target_dir = settings.dj_library_dir / safe_path_part(target_genre)
         target_path = ensure_unique_path(target_dir / current_path.name, occupied, f"{row['id']}:{target_genre}")
     if not delete_target and current_path == target_path and row["display_genre"] == target_genre:
         status = "unchanged"
@@ -151,7 +151,13 @@ def _apply_action(settings: Settings, connection, action: ConsolidationAction) -
             )
 
         action.target_path.parent.mkdir(parents=True, exist_ok=True)
-        write_genre(action.current_path, action.target_genre)
+        original_genre = action.source_genre if settings.preserve_original_genre_in_comment else None
+        write_genre(
+            action.current_path,
+            action.target_genre,
+            original_genre=original_genre,
+            original_genre_comment_prefix=settings.original_genre_comment_prefix,
+        )
         if action.current_path != action.target_path:
             old_parent = action.current_path.parent
             shutil.move(action.current_path, action.target_path)

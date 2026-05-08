@@ -76,7 +76,7 @@ Phase 1 includes:
 
 1. Load and validate `settings.yaml`.
 2. Resolve external binary paths.
-3. Recursively scan `source_root`.
+3. Recursively scan `unprocessed_music_dir`.
 4. Read metadata from supported audio files.
 5. Infer missing artist/title from filename when safe.
 6. Apply genre mappings.
@@ -112,7 +112,7 @@ The filename requires artist and title. BPM and key are optional components.
 
 Default behavior:
 
-1. Missing genre goes to `_Needs Genre`.
+1. Missing genre goes to `uncategorizable_dir/Missing Genre`.
 2. Missing artist uses `Unknown Artist` and records an internal processing label.
 3. Missing title uses `Unknown Title` and records an internal processing label.
 4. Missing BPM is omitted from the filename.
@@ -159,7 +159,7 @@ Raw Genre        Count  Canonical
 Drum and Bass    132    Drum & Bass
 DnB               44    Drum & Bass
 Liquid DNB        12    <unmapped>
-<missing>          9    _Needs Genre
+<missing>          9    Missing Genre
 ```
 
 Example YAML bootstrap output:
@@ -204,7 +204,7 @@ Treat genre as a single field for the initial version. Do not split on delimiter
 Default destination path:
 
 ```text
-{library_root}/{canonical_genre}/{safe_filename}
+{dj_library_dir}/{canonical_genre}/{safe_filename}
 ```
 
 Default filename template:
@@ -387,31 +387,22 @@ This phase builds on the already-working copy pipeline. Do not implement archive
 
 Phase 5 includes:
 
-1. `archive_move` source completion.
-2. `archive_copy` source completion.
-3. `delete` source completion only when explicitly configured.
-4. Archive collision handling.
-5. Source cleanup reporting.
-6. Optional empty source directory cleanup.
+1. Keep unprocessed source files in place.
+2. Route uncategorizable files under `uncategorizable_dir` by reason.
+3. Route duplicate files under `duplicates_dir` by duplicate policy.
 
-Supported actions:
+Supported source handling:
 
-1. `keep`: leave source file in place. This is the default.
-2. `archive_move`: move source file into `processed_source_root`.
-3. `archive_copy`: copy source file into `processed_source_root` and keep source in place.
-4. `delete`: delete source file after successful processing.
+1. Leave source files in place by default.
+2. Copy curated files into `dj_library_dir`.
+3. Copy missing or unmapped genre files into `uncategorizable_dir`.
+4. Move duplicate outputs into `duplicates_dir` when duplicate quarantine is enabled.
 
 Operational rules:
 
-1. Default remains `keep`.
-2. Prefer `archive_move` over `delete` when cleaning the dump folder.
-3. Archive files preserve the original source bytes.
-4. Archive files are not rewritten with canonical genre metadata.
-5. Archive path and cleanup status are stored in SQLite.
-6. Run only after managed copy verification, metadata write-back, and database update succeed.
-7. Never run for skipped, failed, duplicate-review, or needs-review files by default.
-8. Preserve the source file's relative path under `source_root` when archiving.
-9. Never overwrite archive files.
+1. Never delete source files as part of normal processing.
+2. Run only after copy verification, metadata write-back, and database update succeed.
+3. Never overwrite output files.
 
 ## Phase 6: Genre Consolidation
 
@@ -442,7 +433,7 @@ For each matching managed song:
 Safety rules:
 
 1. Default to dry-run.
-2. Never operate on files outside `library_root` unless explicitly allowed.
+2. Never operate on files outside `dj_library_dir` unless explicitly allowed.
 3. Never overwrite a target path.
 4. Do not remove empty genre directories unless `remove_empty_genre_dirs` is enabled.
 5. If metadata write-back or file move fails, mark the song for review.
@@ -636,9 +627,10 @@ Defaults live in `settings.yaml`. CLI flags override settings for one run.
 Suggested `settings.yaml`:
 
 ```yaml
-source_root: /Music/Dump
-library_root: /Music/DJ Library
-processed_source_root: /Music/DJ Processed Source Archive
+unprocessed_music_dir: /Music/DJ Unprocessed
+dj_library_dir: /Music/DJ Library
+uncategorizable_dir: /Music/DJ Uncategorizable
+duplicates_dir: /Music/DJ Duplicates
 database_path: ~/.dj-sort/library.sqlite3
 genre_map_path: ./genres.yaml
 binary_paths:
@@ -652,17 +644,19 @@ genre_discovery:
 recursive: true
 dry_run: true
 limit: null
-source_completion_action: keep
-source_archive_preserve_relative_path: true
-remove_empty_source_dirs: false
 detect_potential_duplicates: true
+duplicate_policy: exact_only
 strict: false
 bpm_format: integer
 key_format: camelot
-unknown_genre_dir: _Needs Genre
-needs_review_dir: _Needs Review
-quarantine_dir: _Duplicates Review
+missing_genre_dir: Missing Genre
+unmapped_genre_dir: Unmapped Genre
+needs_review_dir: Needs Review
+  too_long_dir: Too Long
+  blacklisted_dir: Blacklisted
 write_canonical_genre_to_metadata: true
+preserve_original_genre_in_comment: true
+original_genre_comment_prefix: "dj-sort original genre:"
 omit_missing_filename_parts: true
 filename_template: "{artist} - {title} - {bpm} - {key}.{ext}"
 remove_empty_genre_dirs: false

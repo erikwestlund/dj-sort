@@ -7,10 +7,10 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-SourceCompletionAction = Literal["keep", "archive_move", "archive_copy", "delete"]
 ReportFormat = Literal["text", "json", "yaml"]
 BpmFormat = Literal["integer", "one_decimal", "preserve"]
 KeyFormat = Literal["camelot"]
+DuplicatePolicy = Literal["exact_only", "potential_too", "report_only"]
 
 
 class BinaryPaths(BaseModel):
@@ -30,9 +30,10 @@ class GenreConsolidationSettings(BaseModel):
 
 
 class Settings(BaseModel):
-    source_root: Path
-    library_root: Path = Field(default=Path("~/Music/DJ Library"), validate_default=True)
-    processed_source_root: Path
+    unprocessed_music_dir: Path
+    dj_library_dir: Path = Field(default=Path("~/Music/DJ Library"), validate_default=True)
+    uncategorizable_dir: Path = Field(default=Path("~/Music/DJ Uncategorizable"), validate_default=True)
+    duplicates_dir: Path = Field(default=Path("~/Music/DJ Duplicates"), validate_default=True)
     database_path: Path = Path("~/.dj-sort/library.sqlite3")
     genre_map_path: Path = Path("./genres.yaml")
     binary_paths: BinaryPaths = Field(default_factory=BinaryPaths)
@@ -40,18 +41,19 @@ class Settings(BaseModel):
     recursive: bool = True
     dry_run: bool = True
     limit: int | None = Field(default=None, ge=1)
-    source_completion_action: SourceCompletionAction = "keep"
-    source_archive_preserve_relative_path: bool = True
-    remove_empty_source_dirs: bool = False
     detect_potential_duplicates: bool = True
+    duplicate_policy: DuplicatePolicy = "exact_only"
     strict: bool = False
     bpm_format: BpmFormat = "integer"
     key_format: KeyFormat = "camelot"
-    unknown_genre_dir: str = "_Needs Genre"
-    uncurated_genre_dir: str = "_Uncurated Genre"
-    needs_review_dir: str = "_Needs Review"
-    quarantine_dir: str = "_Duplicates Review"
+    missing_genre_dir: str = "Missing Genre"
+    unmapped_genre_dir: str = "Unmapped Genre"
+    needs_review_dir: str = "Needs Review"
+    too_long_dir: str = "Too Long"
+    blacklisted_dir: str = "Blacklisted"
     write_canonical_genre_to_metadata: bool = True
+    preserve_original_genre_in_comment: bool = True
+    original_genre_comment_prefix: str = "dj-sort original genre:"
     omit_missing_filename_parts: bool = True
     filename_template: str = "{artist} - {title} - {bpm} - {key}.{ext}"
     max_duration_minutes: float | None = Field(default=15, gt=0)
@@ -62,9 +64,10 @@ class Settings(BaseModel):
     )
 
     @field_validator(
-        "source_root",
-        "library_root",
-        "processed_source_root",
+        "unprocessed_music_dir",
+        "dj_library_dir",
+        "uncategorizable_dir",
+        "duplicates_dir",
         "database_path",
         "genre_map_path",
         mode="before",

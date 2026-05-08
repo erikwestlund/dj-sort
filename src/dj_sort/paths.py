@@ -51,10 +51,3 @@ def ensure_unique_path(path: Path, occupied: set[Path], suffix_seed: str) -> Pat
         counter += 1
     occupied.add(candidate)
     return candidate
-
-
-def relative_archive_path(source_root: Path, source_path: Path) -> Path:
-    try:
-        return source_path.relative_to(source_root)
-    except ValueError:
-        return Path(source_path.name)

@@ -61,7 +61,7 @@ uv run dj-sort process --settings settings.yaml --dry-run --limit 10
 - [x] Resolve configured binary paths.
 - [x] Fall back to system `PATH` for null binary paths.
 - [x] Add diagnostic output for resolved binaries.
-- [x] Recursively scan `source_root`.
+- [x] Recursively scan `unprocessed_music_dir`.
 - [x] Filter supported audio formats.
 - [x] Report unsupported files with reasons.
 - [x] Process files in deterministic path order.
@@ -77,7 +77,7 @@ uv run dj-sort process --settings settings.yaml --dry-run --limit 10
 - [x] Normalize genre aliases for matching.
 - [x] Apply canonical genre mappings.
 - [x] Preserve unmapped genre values by default.
-- [x] Route missing genre to `_Needs Genre`.
+- [x] Route missing genre to `uncategorizable_dir/Missing Genre`.
 - [x] Normalize key to Camelot when confident.
 - [x] Omit uncertain or missing key from filename.
 - [x] Format BPM according to `bpm_format`.
@@ -178,23 +178,10 @@ uv run dj-sort process --settings settings.yaml --dry-run --limit 10
 
 ## Phase 5: Source Archival Workflows
 
-- [x] Implement `source_completion_action: keep`.
-- [x] Implement `source_completion_action: archive_move`.
-- [x] Implement `source_completion_action: archive_copy`.
-- [x] Implement `source_completion_action: delete` only when explicitly configured.
-- [x] Add `--archive-source` shortcut.
-- [x] Add `--keep-source` shortcut.
-- [x] Add `--delete-source` shortcut.
-- [x] Preserve source-relative paths under `processed_source_root`.
-- [x] Detect archive path collisions.
-- [x] Add deterministic archive collision suffix.
-- [x] Never overwrite archive files.
-- [x] Store `source_archive_path`.
-- [x] Store `source_archived_at`.
-- [x] Store `source_cleanup_status`.
-- [x] Skip source completion for failed/skipped/review files.
-- [x] Optionally remove empty source directories.
-- [x] Report source files kept, archived, removed, or failed.
+- [x] Keep unprocessed source files in place.
+- [x] Route missing and unmapped genres into `uncategorizable_dir`.
+- [ ] Move exact duplicates into `duplicates_dir`.
+- [ ] Decide whether potential duplicates should quarantine or only report.
 
 ## Phase 6: Genre Consolidation
 

@@ -5,10 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dj_sort import database
-from dj_sort.database import connect, initialize, utc_now
+from dj_sort.database import connect, initialize
 from dj_sort.hashing import sha256_audio_payload, sha256_file
 from dj_sort.metadata import write_genre
-from dj_sort.paths import ensure_unique_path, relative_archive_path
 from dj_sort.planning import Plan, PlanningResult
 from dj_sort.settings import Settings
 
@@ -58,7 +57,6 @@ def process_plans(settings: Settings, planning_result: PlanningResult) -> Proces
     connection = connect(settings.database_path)
     initialize(connection)
     processed: list[ProcessedFile] = []
-    archive_occupied: set[Path] = set()
 
     for skipped in planning_result.skipped:
         if skipped.reason in TRACKED_EXCLUSION_REASONS:
@@ -69,25 +67,28 @@ def process_plans(settings: Settings, planning_result: PlanningResult) -> Proces
     for plan in planning_result.plans:
         database.clear_excluded_song(connection, plan.source_path)
 
-        processed.append(_process_one(settings, connection, plan, archive_occupied))
+        processed.append(_process_one(settings, connection, plan))
 
     connection.close()
     return ProcessingResult(processed=processed, planned=planning_result)
 
 
-def _process_one(settings: Settings, connection, plan: Plan, archive_occupied: set[Path]) -> ProcessedFile:
+def _process_one(settings: Settings, connection, plan: Plan) -> ProcessedFile:
     original_hash: str | None = None
     final_hash: str | None = None
     notes: list[str] = []
     source_archive_path: Path | None = None
     source_cleanup_status = "kept"
-    source_archived_at: str | None = None
-    source_removed_at: str | None = None
 
     try:
         original_hash = sha256_file(plan.source_path)
         existing = database.find_existing_by_source_hash(connection, plan.source_path, original_hash)
-        if existing is not None and existing.current_path.exists():
+        should_reprocess_existing = (
+            existing is not None
+            and existing.current_path.exists()
+            and _should_reprocess_existing(settings, existing.current_path, plan.target_path)
+        )
+        if existing is not None and existing.current_path.exists() and not should_reprocess_existing:
             return ProcessedFile(
                 source_path=plan.source_path,
                 target_path=existing.current_path,
@@ -106,14 +107,20 @@ def _process_one(settings: Settings, connection, plan: Plan, archive_occupied: s
         if copied_hash != original_hash:
             raise ValueError("copied file hash does not match source")
 
-        if settings.write_canonical_genre_to_metadata and plan.canonical_genre != settings.unknown_genre_dir:
+        if _should_write_canonical_genre(settings, plan):
             try:
-                write_genre(plan.target_path, plan.canonical_genre)
+                original_genre = plan.raw_genre if settings.preserve_original_genre_in_comment else None
+                write_genre(
+                    plan.target_path,
+                    plan.canonical_genre,
+                    original_genre=original_genre,
+                    original_genre_comment_prefix=settings.original_genre_comment_prefix,
+                )
             except Exception as exc:  # noqa: BLE001 - metadata write failures should be reviewable
                 notes.append(f"metadata_write_error: {exc}")
 
         final_hash = sha256_file(plan.target_path)
-        stored = database.save_processed_song(
+        database.save_processed_song(
             connection,
             plan,
             original_hash=original_hash,
@@ -122,22 +129,8 @@ def _process_one(settings: Settings, connection, plan: Plan, archive_occupied: s
             status="needs_review" if notes else "processed",
             notes="; ".join(notes) if notes else None,
         )
-
-        if not notes:
-            source_archive_path, source_cleanup_status, source_archived_at, source_removed_at = _complete_source(
-                settings,
-                plan,
-                archive_occupied,
-            )
-            if source_cleanup_status != "kept":
-                database.update_song_source_cleanup(
-                    connection,
-                    stored.id,
-                    source_cleanup_status=source_cleanup_status,
-                    source_archive_path=source_archive_path,
-                    source_archived_at=source_archived_at,
-                    source_removed_at=source_removed_at,
-                )
+        if should_reprocess_existing and existing is not None:
+            _cleanup_reprocessed_existing(settings, connection, existing.id, existing.current_path, plan.target_path)
 
         return ProcessedFile(
             source_path=plan.source_path,
@@ -161,44 +154,47 @@ def _process_one(settings: Settings, connection, plan: Plan, archive_occupied: s
         return ProcessedFile(plan.source_path, plan.target_path, "error", str(exc))
 
 
-def _complete_source(
-    settings: Settings,
-    plan: Plan,
-    archive_occupied: set[Path],
-) -> tuple[Path | None, str, str | None, str | None]:
-    action = settings.source_completion_action
-    if action == "keep":
-        return None, "kept", None, None
-
-    if action in {"archive_move", "archive_copy"}:
-        relative = relative_archive_path(settings.source_root, plan.source_path)
-        archive_path = ensure_unique_path(
-            settings.processed_source_root / relative,
-            archive_occupied,
-            str(plan.source_path),
-        )
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        if action == "archive_copy":
-            shutil.copy2(plan.source_path, archive_path)
-            return archive_path, "archive_copied", utc_now(), None
-        shutil.move(plan.source_path, archive_path)
-        _remove_empty_source_dirs(settings, plan.source_path.parent)
-        return archive_path, "archive_moved", utc_now(), utc_now()
-
-    if action == "delete":
-        plan.source_path.unlink()
-        _remove_empty_source_dirs(settings, plan.source_path.parent)
-        return None, "deleted", None, utc_now()
-
-    raise ValueError(f"Unsupported source completion action: {action}")
+def _should_write_canonical_genre(settings: Settings, plan: Plan) -> bool:
+    if not settings.write_canonical_genre_to_metadata:
+        return False
+    if plan.canonical_genre == settings.missing_genre_dir:
+        return False
+    try:
+        plan.target_path.resolve().relative_to(settings.dj_library_dir.resolve())
+    except ValueError:
+        return False
+    return True
 
 
-def _remove_empty_source_dirs(settings: Settings, start: Path) -> None:
-    if not settings.remove_empty_source_dirs:
-        return
-    source_root = settings.source_root.resolve()
+def _should_reprocess_existing(settings: Settings, existing_path: Path, target_path: Path) -> bool:
+    if existing_path == target_path:
+        return False
+    if _is_under(existing_path, settings.uncategorizable_dir) and _is_under(target_path, settings.dj_library_dir):
+        return True
+    return _is_under(existing_path, settings.dj_library_dir) and _is_under(target_path, settings.dj_library_dir)
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _cleanup_reprocessed_existing(settings: Settings, connection, song_id: int, old_path: Path, new_path: Path) -> None:
+    is_managed_output = _is_under(old_path, settings.uncategorizable_dir) or _is_under(old_path, settings.dj_library_dir)
+    if old_path != new_path and is_managed_output and old_path.exists():
+        old_path.unlink()
+        stop = settings.uncategorizable_dir if _is_under(old_path, settings.uncategorizable_dir) else settings.dj_library_dir
+        _remove_empty_parents(old_path.parent, stop)
+    database.delete_song(connection, song_id)
+
+
+def _remove_empty_parents(start: Path, stop: Path) -> None:
+    stop = stop.resolve()
     current = start.resolve()
-    while current != source_root and source_root in current.parents:
+    while current != stop and stop in current.parents:
         try:
             current.rmdir()
         except OSError:

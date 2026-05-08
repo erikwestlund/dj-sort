@@ -18,13 +18,14 @@ Happy Path:
 - Reads audio metadata with `mutagen`.
 - Discovers all unique raw genre values before processing.
 - Applies canonical genre mappings from `genres.yaml`.
-- Copies files into `{library_root}/{canonical_genre}/`.
+- Copies curated files into `{dj_library_dir}/{canonical_genre}/`.
+- Routes missing or unmapped genre files into `uncategorizable_dir`.
 - Renames files as `Artist - Title - BPM - Key.{ext}`.
 - Omits BPM/key cleanly when missing.
 - Infers artist/title from filenames like `Artist - Title.mp3`.
 - Writes canonical genre metadata back to the managed library copy.
-- Keeps source files by default.
-- Can move/copy processed source files into a separate archive location.
+- Preserves changed raw genre values in a machine-readable comment on managed copies.
+- Keeps unprocessed source files in place.
 - Stores operational state in SQLite.
 - Tracks exact duplicate groups when audio-payload hashing is available.
 - Tracks potential duplicates by normalized artist/title.
@@ -71,26 +72,28 @@ cp genres.example.yaml genres.yaml
 Edit `settings.yaml`:
 
 ```yaml
-source_root: /path/to/music-dump
-library_root: /path/to/organized-dj-library
-processed_source_root: /path/to/processed-source-archive
+unprocessed_music_dir: /path/to/music-dump
+dj_library_dir: /path/to/organized-dj-library
+uncategorizable_dir: /path/to/uncategorizable-output
+duplicates_dir: /path/to/duplicates
 database_path: ~/.dj-sort/library.sqlite3
 genre_map_path: ./genres.yaml
 dry_run: true
 limit: null
-source_completion_action: keep
 ```
 
 Important settings:
 
-- `source_root`: messy recursive source folder.
-- `library_root`: organized managed DJ library output folder.
-- `processed_source_root`: optional archive for original source files after successful processing.
+- `unprocessed_music_dir`: messy recursive source folder.
+- `dj_library_dir`: organized managed DJ library output folder.
+- `uncategorizable_dir`: valid audio that is not ready for the clean library.
+- `duplicates_dir`: duplicate quarantine/review folder.
 - `database_path`: SQLite database location.
 - `genre_map_path`: canonical genre mapping file.
 - `dry_run`: defaults to `true` for safety.
 - `limit`: process only N candidate audio files.
-- `source_completion_action`: `keep`, `archive_move`, `archive_copy`, or `delete`.
+- `duplicate_policy`: `exact_only`, `potential_too`, or `report_only`.
+- `preserve_original_genre_in_comment`: when canonical genre write-back changes a curated file's genre, append the raw genre to comments.
 
 Edit `genres.yaml`:
 
@@ -124,6 +127,20 @@ List all unique genre metadata values in the source dump:
 uv run dj-sort genres discover --settings settings.yaml
 ```
 
+Shortcut for scanning a specific path under `unprocessed_music_dir`:
+
+```bash
+uv run dj-sort get-genres 2026-05-04 --settings settings.yaml
+```
+
+Use a different base directory:
+
+```bash
+uv run dj-sort get-genres House --base-dir dj_library --settings settings.yaml
+uv run dj-sort get-genres "Missing Genre" --base-dir uncategorizable --settings settings.yaml
+uv run dj-sort get-genres . --base-dir /absolute/path/to/music --settings settings.yaml
+```
+
 Create a YAML bootstrap report for genre mappings:
 
 ```bash
@@ -132,7 +149,19 @@ uv run dj-sort genres discover --settings settings.yaml --format yaml --output d
 
 ### Dry Run
 
-Always start here:
+Dry-run a specific incoming directory:
+
+```bash
+uv run dj-sort transfer 2026-05-04 --settings settings.yaml
+```
+
+Use the same base directory handling as `get-genres`:
+
+```bash
+uv run dj-sort transfer . --base-dir /absolute/path/to/music --settings settings.yaml
+```
+
+Dry-run the whole unprocessed directory:
 
 ```bash
 uv run dj-sort process --settings settings.yaml --dry-run --limit 25
@@ -146,28 +175,54 @@ uv run dj-sort process --settings settings.yaml --dry-run --limit 25 --format js
 
 ### Process Files
 
-Copy files into the managed library and keep source files:
+Copy curated files from a specific incoming directory and keep source files:
+
+```bash
+uv run dj-sort transfer 2026-05-04 --settings settings.yaml --write --limit 25
+```
+
+Copy curated files from the whole unprocessed directory and keep source files:
 
 ```bash
 uv run dj-sort process --settings settings.yaml --write --limit 25
 ```
 
-Copy files into the managed library and move originals into the processed-source archive:
+### Review Uncategorizable
+
+Export files that would land in `uncategorizable_dir` to a CSV:
 
 ```bash
-uv run dj-sort process --settings settings.yaml --write --archive-source --limit 25
+uv run dj-sort export-uncategorizable 2026-05-04 --settings settings.yaml
 ```
 
-Copy source files into the archive while also keeping them in the source dump:
+By default this writes `reports/uncategorizable/2026-05-04.csv`.
+
+Fill in the `update_genre` column, then dry-run the metadata updates:
 
 ```bash
-uv run dj-sort process --settings settings.yaml --write --source-completion-action archive_copy --limit 25
+uv run dj-sort apply-genre-updates 2026-05-04.csv --settings settings.yaml
 ```
 
-Delete source files after successful processing only if explicitly requested:
+The apply command looks in the current path, `reports/`, and `reports/uncategorizable/`.
+
+Apply the updates to the source files:
 
 ```bash
-uv run dj-sort process --settings settings.yaml --write --delete-source --limit 25
+uv run dj-sort apply-genre-updates 2026-05-04.csv --settings settings.yaml --write
+```
+
+When applied with `--write`, each edited row is repaired in place: the source tag is updated, that file is re-transferred to its new destination, and the stale `uncategorizable_dir` copy for that source file is removed after the new copy succeeds.
+
+Copy curated genres from exact artist/title duplicates, dry-run first:
+
+```bash
+uv run dj-sort copy-duplicate-genres 2026-05-04 --from-base "iTunes Library" --settings settings.yaml
+```
+
+Apply the duplicate genre updates:
+
+```bash
+uv run dj-sort copy-duplicate-genres 2026-05-04 --from-base "iTunes Library" --settings settings.yaml --write
 ```
 
 ### Duplicate Reports
@@ -203,7 +258,7 @@ Genre consolidation updates managed file genre metadata, moves files to the targ
 ## Safety Model
 
 - Dry run is the default.
-- Source files are kept by default.
+- Source files are kept in place.
 - Files are copied into the managed library before source cleanup.
 - The tool never overwrites existing files automatically.
 - Duplicate reports are for review only.
