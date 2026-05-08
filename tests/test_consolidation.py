@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from dj_sort.consolidation import consolidate_genres
-from dj_sort.database import connect, initialize, save_processed_song
+from dj_sort.database import connect, initialize, save_processed_song, songs_for_genre
 from dj_sort.planning import Plan
 from dj_sort.settings import Settings
 
@@ -36,6 +36,50 @@ def test_consolidation_dry_run_plans_move(tmp_path: Path) -> None:
     assert len(result.actions) == 1
     assert result.actions[0].status == "planned"
     assert result.actions[0].target_path == library / "Drum & Bass" / "Artist - Title.mp3"
+
+
+def test_consolidation_delete_target_removes_file_and_marks_song_deleted(tmp_path: Path) -> None:
+    library = tmp_path / "library"
+    current = library / "DnB" / "Artist - Title.mp3"
+    current.parent.mkdir(parents=True)
+    current.write_bytes(b"\xff\xfb" + b"audio-data")
+    settings = Settings(
+        source_root=tmp_path / "source",
+        library_root=library,
+        processed_source_root=tmp_path / "archive",
+        database_path=tmp_path / "db.sqlite3",
+        genre_map_path=tmp_path / "genres.yaml",
+        remove_empty_genre_dirs=True,
+    )
+    connection = connect(settings.database_path)
+    initialize(connection)
+    save_processed_song(
+        connection,
+        _plan(current, current),
+        original_hash="source-hash",
+        final_hash="final-hash",
+        audio_hash=None,
+        status="processed",
+    )
+    connection.close()
+
+    result = consolidate_genres(settings, {"DnB": "Delete"}, dry_run=False)
+
+    assert len(result.actions) == 1
+    assert result.actions[0].status == "deleted"
+    assert current.exists() is False
+    assert current.parent.exists() is False
+
+    connection = connect(settings.database_path)
+    deleted_song = connection.execute(
+        "SELECT processing_status, processing_notes FROM song WHERE current_path = ?",
+        (str(current),),
+    ).fetchone()
+    assert deleted_song is not None
+    assert deleted_song["processing_status"] == "deleted"
+    assert deleted_song["processing_notes"] == "deleted by genre consolidation"
+    assert songs_for_genre(connection, "DnB") == []
+    connection.close()
 
 
 def _plan(source: Path, target: Path) -> Plan:

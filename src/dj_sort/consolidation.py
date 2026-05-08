@@ -11,6 +11,8 @@ from dj_sort.metadata import write_genre
 from dj_sort.paths import ensure_unique_path, safe_path_part
 from dj_sort.settings import Settings
 
+DELETE_GENRE = "Delete"
+
 
 @dataclass(frozen=True)
 class ConsolidationAction:
@@ -97,9 +99,13 @@ def _plan_action(
     occupied: set[Path],
 ) -> ConsolidationAction:
     current_path = Path(row["current_path"])
-    target_dir = settings.library_root / safe_path_part(target_genre)
-    target_path = ensure_unique_path(target_dir / current_path.name, occupied, f"{row['id']}:{target_genre}")
-    if current_path == target_path and row["display_genre"] == target_genre:
+    delete_target = target_genre.casefold() == DELETE_GENRE.casefold()
+    if delete_target:
+        target_path = current_path
+    else:
+        target_dir = settings.library_root / safe_path_part(target_genre)
+        target_path = ensure_unique_path(target_dir / current_path.name, occupied, f"{row['id']}:{target_genre}")
+    if not delete_target and current_path == target_path and row["display_genre"] == target_genre:
         status = "unchanged"
     elif not current_path.exists():
         status = "error"
@@ -124,6 +130,26 @@ def _apply_action(settings: Settings, connection, action: ConsolidationAction) -
         return action
 
     try:
+        if action.target_genre.casefold() == DELETE_GENRE.casefold():
+            old_parent = action.current_path.parent
+            action.current_path.unlink()
+            remove_empty_genre_dirs(settings, old_parent)
+            database.mark_song_deleted(
+                connection,
+                song_id=action.song_id,
+                previous_path=action.current_path,
+                previous_genre=action.source_genre,
+                deleted_genre=action.target_genre,
+            )
+            return ConsolidationAction(
+                song_id=action.song_id,
+                source_genre=action.source_genre,
+                target_genre=action.target_genre,
+                current_path=action.current_path,
+                target_path=action.target_path,
+                status="deleted",
+            )
+
         action.target_path.parent.mkdir(parents=True, exist_ok=True)
         write_genre(action.current_path, action.target_genre)
         if action.current_path != action.target_path:

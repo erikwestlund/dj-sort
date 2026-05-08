@@ -402,6 +402,39 @@ def update_consolidated_song(
         )
 
 
+def mark_song_deleted(
+    connection: sqlite3.Connection,
+    song_id: int,
+    previous_path: Path,
+    previous_genre: str | None,
+    deleted_genre: str,
+) -> None:
+    now = utc_now()
+    with connection:
+        connection.execute(
+            """
+            UPDATE song
+            SET processing_status = ?, processing_notes = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            ("deleted", "deleted by genre consolidation", now, song_id),
+        )
+        _log_operation(
+            connection,
+            song_id,
+            "genre_consolidation",
+            str(previous_path),
+            None,
+            previous_genre,
+            deleted_genre,
+            None,
+            None,
+            "deleted",
+            None,
+            now,
+        )
+
+
 def genre_id(connection: sqlite3.Connection, display_genre: str) -> int:
     return _upsert_named(connection, "genre", display_genre.casefold(), display_genre, utc_now())
 
@@ -410,7 +443,8 @@ def songs_for_genre(connection: sqlite3.Connection, source_genre: str) -> list[s
     return connection.execute(
         """
         SELECT * FROM song
-        WHERE display_genre = ? COLLATE NOCASE OR raw_genre = ? COLLATE NOCASE
+        WHERE processing_status != 'deleted'
+          AND (display_genre = ? COLLATE NOCASE OR raw_genre = ? COLLATE NOCASE)
         ORDER BY current_path
         """,
         (source_genre, source_genre),
@@ -551,7 +585,7 @@ def _exact_duplicate_groups(connection: sqlite3.Connection) -> list[dict[str, ob
         """
         SELECT file_hash_without_metadata, COUNT(*) AS count
         FROM song
-        WHERE file_hash_without_metadata IS NOT NULL
+        WHERE file_hash_without_metadata IS NOT NULL AND processing_status != 'deleted'
         GROUP BY file_hash_without_metadata
         HAVING COUNT(*) > 1
         ORDER BY count DESC
@@ -563,7 +597,7 @@ def _exact_duplicate_groups(connection: sqlite3.Connection) -> list[dict[str, ob
             SELECT current_path, display_artist, title, display_genre, bpm, musical_key,
                    extension, file_size, bitrate, duration_ms
             FROM song
-            WHERE file_hash_without_metadata = ?
+            WHERE file_hash_without_metadata = ? AND processing_status != 'deleted'
             ORDER BY current_path
             """,
             (row["file_hash_without_metadata"],),
@@ -585,6 +619,7 @@ def _potential_duplicate_groups(connection: sqlite3.Connection) -> list[dict[str
         SELECT pdg.id, pdg.normalized_artist_name, pdg.normalized_title, COUNT(song.id) AS count
         FROM potential_duplicate_group pdg
         JOIN song ON song.potential_duplicate_group_id = pdg.id
+        WHERE song.processing_status != 'deleted'
         GROUP BY pdg.id
         HAVING COUNT(song.id) > 1
         ORDER BY count DESC
@@ -596,7 +631,7 @@ def _potential_duplicate_groups(connection: sqlite3.Connection) -> list[dict[str
             SELECT current_path, display_artist, title, display_genre, bpm, musical_key,
                    extension, file_size, bitrate, duration_ms
             FROM song
-            WHERE potential_duplicate_group_id = ?
+            WHERE potential_duplicate_group_id = ? AND processing_status != 'deleted'
             ORDER BY current_path
             """,
             (row["id"],),
