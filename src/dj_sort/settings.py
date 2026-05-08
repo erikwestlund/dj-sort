@@ -31,7 +31,7 @@ class GenreConsolidationSettings(BaseModel):
 
 class Settings(BaseModel):
     source_root: Path
-    library_root: Path
+    library_root: Path = Field(default=Path("~/Music/DJ Library"), validate_default=True)
     processed_source_root: Path
     database_path: Path = Path("~/.dj-sort/library.sqlite3")
     genre_map_path: Path = Path("./genres.yaml")
@@ -53,6 +53,8 @@ class Settings(BaseModel):
     write_canonical_genre_to_metadata: bool = True
     omit_missing_filename_parts: bool = True
     filename_template: str = "{artist} - {title} - {bpm} - {key}.{ext}"
+    max_duration_minutes: float | None = Field(default=15, gt=0)
+    blacklist_substrings: list[str] = Field(default_factory=list)
     remove_empty_genre_dirs: bool = False
     genre_consolidation: GenreConsolidationSettings = Field(
         default_factory=GenreConsolidationSettings

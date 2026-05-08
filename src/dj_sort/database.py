@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from dj_sort.planning import Plan
+from dj_sort.planning import Plan, SkippedFile
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS artist (
@@ -117,6 +117,18 @@ CREATE TABLE IF NOT EXISTS song_operation_log (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS excluded_song (
+  id INTEGER PRIMARY KEY,
+  source_path TEXT NOT NULL UNIQUE,
+  raw_genre TEXT,
+  canonical_genre TEXT,
+  duration_ms INTEGER,
+  reason TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_song_audio_hash ON song(file_hash_without_metadata);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_duplicate_group_audio_hash ON duplicate_group(file_hash_without_metadata);
 CREATE INDEX IF NOT EXISTS idx_song_full_hash ON song(file_hash_with_metadata);
@@ -127,6 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_song_genre ON song(genre_id);
 CREATE INDEX IF NOT EXISTS idx_song_potential_duplicate_group ON song(potential_duplicate_group_id);
 CREATE INDEX IF NOT EXISTS idx_song_processing_label_label_id ON song_processing_label(processing_label_id);
 CREATE INDEX IF NOT EXISTS idx_song_operation_log_song_id ON song_operation_log(song_id);
+CREATE INDEX IF NOT EXISTS idx_excluded_song_reason ON excluded_song(reason);
 """
 
 
@@ -166,6 +179,27 @@ def duplicate_report(connection: sqlite3.Connection) -> dict[str, object]:
         "summary": {
             "exact_duplicate_groups": len(exact),
             "potential_duplicate_groups": len(potential),
+        },
+    }
+
+
+def excluded_report(connection: sqlite3.Connection, reason: str | None = None) -> dict[str, object]:
+    query = (
+        "SELECT source_path, raw_genre, canonical_genre, duration_ms, reason, notes, created_at, updated_at "
+        "FROM excluded_song"
+    )
+    params: tuple[str, ...] = ()
+    if reason:
+        query += " WHERE reason = ?"
+        params = (reason,)
+    query += " ORDER BY updated_at DESC, source_path"
+    rows = connection.execute(query, params).fetchall()
+    return {
+        "report_type": "excluded_songs",
+        "excluded": [dict(row) for row in rows],
+        "summary": {
+            "excluded": len(rows),
+            "reason": reason,
         },
     }
 
@@ -433,6 +467,40 @@ def mark_song_deleted(
             None,
             now,
         )
+
+
+def save_excluded_song(connection: sqlite3.Connection, skipped: SkippedFile) -> None:
+    now = utc_now()
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO excluded_song (
+              source_path, raw_genre, canonical_genre, duration_ms, reason, notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_path) DO UPDATE SET
+              raw_genre=excluded.raw_genre,
+              canonical_genre=excluded.canonical_genre,
+              duration_ms=excluded.duration_ms,
+              reason=excluded.reason,
+              notes=excluded.notes,
+              updated_at=excluded.updated_at
+            """,
+            (
+                str(skipped.path),
+                skipped.raw_genre,
+                skipped.canonical_genre,
+                skipped.duration_ms,
+                skipped.reason,
+                skipped.notes,
+                now,
+                now,
+            ),
+        )
+
+
+def clear_excluded_song(connection: sqlite3.Connection, source_path: Path) -> None:
+    with connection:
+        connection.execute("DELETE FROM excluded_song WHERE source_path = ?", (str(source_path),))
 
 
 def genre_id(connection: sqlite3.Connection, display_genre: str) -> int:

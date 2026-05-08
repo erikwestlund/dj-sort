@@ -12,6 +12,8 @@ from dj_sort.paths import ensure_unique_path, relative_archive_path
 from dj_sort.planning import Plan, PlanningResult
 from dj_sort.settings import Settings
 
+TRACKED_EXCLUSION_REASONS = {"genre_not_whitelisted", "duration_exceeds_max", "blacklist_substring"}
+
 
 @dataclass(frozen=True)
 class ProcessedFile:
@@ -58,7 +60,15 @@ def process_plans(settings: Settings, planning_result: PlanningResult) -> Proces
     processed: list[ProcessedFile] = []
     archive_occupied: set[Path] = set()
 
+    for skipped in planning_result.skipped:
+        if skipped.reason in TRACKED_EXCLUSION_REASONS:
+            database.save_excluded_song(connection, skipped)
+            continue
+        database.clear_excluded_song(connection, skipped.path)
+
     for plan in planning_result.plans:
+        database.clear_excluded_song(connection, plan.source_path)
+
         processed.append(_process_one(settings, connection, plan, archive_occupied))
 
     connection.close()

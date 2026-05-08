@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from dj_sort.database import connect, duplicate_report, initialize, save_processed_song
-from dj_sort.planning import Plan
+from dj_sort.database import connect, duplicate_report, excluded_report, initialize, save_excluded_song, save_processed_song
+from dj_sort.planning import Plan, SkippedFile
 
 
 def test_save_processed_song_links_potential_duplicates(tmp_path: Path) -> None:
@@ -34,6 +34,40 @@ def test_save_processed_song_links_exact_duplicates(tmp_path: Path) -> None:
     report = duplicate_report(connection)
 
     assert report["summary"]["exact_duplicate_groups"] == 1
+
+
+def test_excluded_report_filters_by_reason(tmp_path: Path) -> None:
+    db_path = tmp_path / "library.sqlite3"
+    connection = connect(db_path)
+    initialize(connection)
+
+    save_excluded_song(
+        connection,
+        SkippedFile(
+            path=tmp_path / "ambient.mp3",
+            reason="genre_not_whitelisted",
+            raw_genre="Ambient",
+            canonical_genre="Ambient",
+            duration_ms=180_000,
+        ),
+    )
+    save_excluded_song(
+        connection,
+        SkippedFile(
+            path=tmp_path / "live.mp3",
+            reason="blacklist_substring",
+            raw_genre="House Music",
+            canonical_genre="House",
+            duration_ms=240_000,
+            notes="matched blacklist substring: (Live",
+        ),
+    )
+
+    report = excluded_report(connection, reason="blacklist_substring")
+
+    assert report["summary"]["excluded"] == 1
+    assert report["summary"]["reason"] == "blacklist_substring"
+    assert report["excluded"][0]["source_path"] == str(tmp_path / "live.mp3")
 
 
 def _plan(source: Path, target: Path) -> Plan:

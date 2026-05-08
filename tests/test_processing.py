@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from dj_sort.planning import Plan, PlanningResult
+from dj_sort.database import connect, initialize
+from dj_sort.planning import Plan, PlanningResult, SkippedFile
 from dj_sort.processing import process_plans
 from dj_sort.settings import Settings
 
@@ -44,6 +45,82 @@ def test_archive_move_preserves_relative_path_and_removes_empty_dirs(tmp_path: P
     assert archived.exists()
     assert not track.exists()
     assert not nested.exists()
+
+
+def test_processing_records_tracked_exclusions(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    library = tmp_path / "library"
+    archive = tmp_path / "archive"
+    source.mkdir()
+    settings = _settings(source, library, archive, tmp_path / "db.sqlite3")
+
+    result = process_plans(
+        settings,
+        PlanningResult(
+            plans=[],
+            skipped=[
+                SkippedFile(
+                    path=source / "Ambient - Long.mp3",
+                    reason="genre_not_whitelisted",
+                    raw_genre="Ambient",
+                    canonical_genre="Ambient",
+                    duration_ms=180_000,
+                )
+            ],
+        ),
+    )
+
+    assert result.processed == []
+    connection = connect(settings.database_path)
+    initialize(connection)
+    row = connection.execute(
+        "SELECT source_path, raw_genre, canonical_genre, duration_ms, reason FROM excluded_song"
+    ).fetchone()
+    connection.close()
+
+    assert row is not None
+    assert row["source_path"] == str(source / "Ambient - Long.mp3")
+    assert row["raw_genre"] == "Ambient"
+    assert row["canonical_genre"] == "Ambient"
+    assert row["duration_ms"] == 180_000
+    assert row["reason"] == "genre_not_whitelisted"
+
+
+def test_processing_records_blacklist_exclusion_notes(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    library = tmp_path / "library"
+    archive = tmp_path / "archive"
+    source.mkdir()
+    settings = _settings(source, library, archive, tmp_path / "db.sqlite3")
+
+    process_plans(
+        settings,
+        PlanningResult(
+            plans=[],
+            skipped=[
+                SkippedFile(
+                    path=source / "Artist - Title (Live).mp3",
+                    reason="blacklist_substring",
+                    raw_genre="House Music",
+                    canonical_genre="House",
+                    duration_ms=180_000,
+                    notes="matched blacklist substring: (Live",
+                )
+            ],
+        ),
+    )
+
+    connection = connect(settings.database_path)
+    initialize(connection)
+    row = connection.execute(
+        "SELECT reason, notes FROM excluded_song WHERE source_path = ?",
+        (str(source / "Artist - Title (Live).mp3"),),
+    ).fetchone()
+    connection.close()
+
+    assert row is not None
+    assert row["reason"] == "blacklist_substring"
+    assert row["notes"] == "matched blacklist substring: (Live"
 
 
 def _settings(source: Path, library: Path, archive: Path, database: Path) -> Settings:

@@ -27,6 +27,8 @@ quarantine_dir: _Duplicates Review
 write_canonical_genre_to_metadata: true
 omit_missing_filename_parts: true
 filename_template: "{artist} - {title} - {bpm} - {key}.{ext}"
+max_duration_minutes: 15
+blacklist_substrings: []
 remove_empty_genre_dirs: false
 genre_consolidation:
   mappings: {}

@@ -18,3 +18,19 @@ def test_genre_map_handles_missing_genre() -> None:
 
     assert result.canonical_genre == "_Needs Genre"
     assert result.missing is True
+
+
+def test_genre_map_load_supports_explicit_whitelist_entries(tmp_path) -> None:
+    genre_map_path = tmp_path / "genres.yaml"
+    genre_map_path.write_text(
+        "genres:\n  House Music: House\n  Techno:\n",
+        encoding="utf-8",
+    )
+
+    genre_map = GenreMap.load(genre_map_path)
+
+    assert genre_map.resolve("House Music", "_Needs Genre").canonical_genre == "House"
+    assert genre_map.resolve("Techno", "_Needs Genre").canonical_genre == "Techno"
+    assert genre_map.is_whitelisted("House") is True
+    assert genre_map.is_whitelisted("Techno") is True
+    assert genre_map.is_whitelisted("Ambient") is False

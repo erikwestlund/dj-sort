@@ -9,7 +9,7 @@ import typer
 import yaml
 
 from dj_sort.consolidation import consolidate_genres
-from dj_sort.database import connect, duplicate_report, initialize
+from dj_sort.database import connect, duplicate_report, excluded_report, initialize
 from dj_sort.genres import GenreMap
 from dj_sort.planning import build_plans
 from dj_sort.processing import process_plans
@@ -145,6 +145,26 @@ def duplicates(
     connection.close()
     elapsed = perf_counter() - start
     rendered = _render_structured_or_text(report, _render_duplicate_text(report), output_format, elapsed)
+    write_or_print(rendered, output)
+
+
+@app.command()
+def excluded(
+    settings_path: SettingsPath = Path("settings.yaml"),
+    reason: Annotated[str | None, typer.Option("--reason", help="Filter by exclusion reason")] = None,
+    output_format: OutputFormat = "text",
+    output: Annotated[Path | None, typer.Option("--output", help="Write report to file")] = None,
+) -> None:
+    """Report files excluded from import by first-pass filters."""
+    start = perf_counter()
+    _validate_output_format(output_format)
+    settings = _load(settings_path)
+    connection = connect(settings.database_path)
+    initialize(connection)
+    report = excluded_report(connection, reason=reason)
+    connection.close()
+    elapsed = perf_counter() - start
+    rendered = _render_structured_or_text(report, _render_excluded_text(report), output_format, elapsed)
     write_or_print(rendered, output)
 
 
@@ -328,4 +348,30 @@ def _render_consolidation_text(result) -> str:
             f"- {action.status}: {action.current_path} -> {action.target_path} "
             f"[{action.source_genre} -> {action.target_genre}]{suffix}"
         )
+    return "\n".join(lines)
+
+
+def _render_excluded_text(report: dict[str, object]) -> str:
+    summary = report["summary"]
+    reason = summary.get("reason")
+    heading = "DJ Sort excluded songs"
+    if reason:
+        heading = f"{heading} ({reason})"
+    lines = [heading, "", f"Excluded files: {summary['excluded']}"]
+    excluded = report["excluded"]
+    if excluded:
+        lines.append("")
+        for row in excluded:
+            details = ", ".join(
+                str(value)
+                for value in [
+                    row.get("reason"),
+                    row.get("canonical_genre"),
+                    row.get("duration_ms"),
+                    row.get("notes"),
+                ]
+                if value is not None
+            )
+            suffix = f" [{details}]" if details else ""
+            lines.append(f"- {row['source_path']}{suffix}")
     return "\n".join(lines)

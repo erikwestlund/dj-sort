@@ -48,9 +48,20 @@ class Plan:
 class SkippedFile:
     path: Path
     reason: str
+    raw_genre: str | None = None
+    canonical_genre: str | None = None
+    duration_ms: int | None = None
+    notes: str | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        return {"path": str(self.path), "reason": self.reason}
+    def to_dict(self) -> dict[str, str | int | None]:
+        return {
+            "path": str(self.path),
+            "reason": self.reason,
+            "raw_genre": self.raw_genre,
+            "canonical_genre": self.canonical_genre,
+            "duration_ms": self.duration_ms,
+            "notes": self.notes,
+        }
 
 
 @dataclass(frozen=True)
@@ -99,7 +110,12 @@ def build_plans(settings: Settings, genre_map: GenreMap, limit: int | None = Non
     for path in paths:
         try:
             metadata = read_metadata(path)
-            plans.append(_build_plan(settings, genre_map, metadata, occupied))
+            genre = genre_map.resolve(metadata.genre, settings.unknown_genre_dir)
+            skipped_file = _skip_for_filters(settings, genre_map, metadata, genre)
+            if skipped_file is not None:
+                skipped.append(skipped_file)
+                continue
+            plans.append(_build_plan(settings, metadata, occupied, genre))
         except Exception as exc:  # noqa: BLE001 - per-file failures should not abort planning
             skipped.append(SkippedFile(path=path, reason=f"metadata_error: {exc}"))
 
@@ -108,11 +124,10 @@ def build_plans(settings: Settings, genre_map: GenreMap, limit: int | None = Non
 
 def _build_plan(
     settings: Settings,
-    genre_map: GenreMap,
     metadata: TrackMetadata,
     occupied: set[Path],
+    genre,
 ) -> Plan:
-    genre = genre_map.resolve(metadata.genre, settings.unknown_genre_dir)
     labels = list(metadata.labels)
     if genre.missing:
         labels.append("Needs Genre")
@@ -147,6 +162,70 @@ def _build_plan(
         needs_review=bool(labels),
         collision_adjusted=unique_target != target,
     )
+
+
+def _skip_for_filters(
+    settings: Settings,
+    genre_map: GenreMap,
+    metadata: TrackMetadata,
+    genre,
+) -> SkippedFile | None:
+    matched_blacklist = _matched_blacklist_substring(settings, metadata, genre.canonical_genre)
+    if matched_blacklist is not None:
+        return SkippedFile(
+            path=metadata.path,
+            reason="blacklist_substring",
+            raw_genre=genre.raw_genre,
+            canonical_genre=genre.canonical_genre,
+            duration_ms=metadata.duration_ms,
+            notes=f"matched blacklist substring: {matched_blacklist}",
+        )
+
+    if not genre_map.is_whitelisted(genre.canonical_genre):
+        return SkippedFile(
+            path=metadata.path,
+            reason="genre_not_whitelisted",
+            raw_genre=genre.raw_genre,
+            canonical_genre=genre.canonical_genre,
+            duration_ms=metadata.duration_ms,
+        )
+
+    if settings.max_duration_minutes is None or metadata.duration_ms is None:
+        return None
+
+    max_duration_ms = int(settings.max_duration_minutes * 60 * 1000)
+    if metadata.duration_ms > max_duration_ms:
+        return SkippedFile(
+            path=metadata.path,
+            reason="duration_exceeds_max",
+            raw_genre=genre.raw_genre,
+            canonical_genre=genre.canonical_genre,
+            duration_ms=metadata.duration_ms,
+        )
+    return None
+
+
+def _matched_blacklist_substring(
+    settings: Settings,
+    metadata: TrackMetadata,
+    canonical_genre: str | None,
+) -> str | None:
+    haystacks = [
+        str(metadata.path),
+        metadata.path.name,
+        metadata.artist or "",
+        metadata.title or "",
+        metadata.album or "",
+        metadata.album_artist or "",
+        metadata.genre or "",
+        canonical_genre or "",
+    ]
+    searchable_text = "\n".join(part.casefold() for part in haystacks if part)
+    for phrase in settings.blacklist_substrings:
+        cleaned = phrase.strip()
+        if cleaned and cleaned.casefold() in searchable_text:
+            return cleaned
+    return None
 
 
 def _filename(settings: Settings, metadata: TrackMetadata) -> str:
