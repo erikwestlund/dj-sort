@@ -2,7 +2,7 @@ unprocessed_music_dir: /Music/DJ Unprocessed
 dj_library_dir: /Music/DJ Library
 uncategorizable_dir: /Music/DJ Uncategorizable
 duplicates_dir: /Music/DJ Duplicates
-database_path: ~/.dj-sort/library.sqlite3
+database_path: ./db/library.sqlite3
 genre_map_path: ./genres.yaml
 binary_paths:
   ffmpeg: null

@@ -33,6 +33,8 @@ Use this as the working build checklist. Keep items small enough to implement an
 - [x] Add `.python-version` if using a pinned local Python version.
 - [x] Add `.gitignore` entries for `.venv/`, caches, reports, temp files, and local settings.
 - [x] Add `settings.yaml` to `.gitignore` if it may contain personal paths.
+- [x] Add `db/` to `.gitignore` for the local SQLite database.
+- [x] Track portable local artifact paths in `.artifacts`.
 - [x] Keep `settings.example.yaml` committed.
 - [x] Keep `genres.example.yaml` committed.
 - [x] Add bootstrap validation for Python version.

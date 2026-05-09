@@ -76,7 +76,7 @@ unprocessed_music_dir: /path/to/music-dump
 dj_library_dir: /path/to/organized-dj-library
 uncategorizable_dir: /path/to/uncategorizable-output
 duplicates_dir: /path/to/duplicates
-database_path: ~/.dj-sort/library.sqlite3
+database_path: ./db/library.sqlite3
 genre_map_path: ./genres.yaml
 dry_run: true
 limit: null
@@ -88,7 +88,7 @@ Important settings:
 - `dj_library_dir`: organized managed DJ library output folder.
 - `uncategorizable_dir`: valid audio that is not ready for the clean library.
 - `duplicates_dir`: duplicate quarantine/review folder.
-- `database_path`: SQLite database location.
+- `database_path`: SQLite database location. By convention this is `./db/library.sqlite3` so the operational DB can travel with local artifacts without being committed.
 - `genre_map_path`: canonical genre mapping file.
 - `dry_run`: defaults to `true` for safety.
 - `limit`: process only N candidate audio files.
@@ -264,6 +264,7 @@ Genre consolidation updates managed file genre metadata, moves files to the targ
 - Duplicate reports are for review only.
 - WAV metadata write-back is disabled pending format-specific validation.
 - Personal paths live in `settings.yaml`, which is gitignored.
+- The operational SQLite DB lives in `db/`, which is gitignored and listed in `.artifacts` for manual portability between machines.
 
 ## Development
 
@@ -289,7 +290,15 @@ Project docs:
 
 - `docs/spec.md`: architecture and implementation direction.
 - `docs/checklist.md`: build checklist and remaining work.
+- `docs/workflow.md`: fast batch processing and genre review workflow.
+- `docs/archive-workflow.md`: archive extraction and numbered-batch workflow.
+
+Local artifact convention:
+
+- `settings.yaml`, `reports/`, and `db/` are local working artifacts and are ignored by git.
+- `.artifacts` is a small manifest of local artifact paths to carry when moving the project state between machines.
+- `db/library.sqlite3` is the active SQLite database path used by `settings.yaml`.
 
 ## macOS Notes
 
-This project is developed local-first on macOS. Large mounted music folders may perform better with direct local execution than Docker Desktop volume mounts. Keep personal absolute paths in `settings.yaml`, which is gitignored, and use `settings.example.yaml` as the committed template.
+This project is developed local-first on macOS. Large mounted music folders may perform better with direct local execution than Docker Desktop volume mounts. Keep personal absolute paths in `settings.yaml`, which is gitignored, and use `settings.example.yaml` as the committed template. Keep local runtime state in `db/` and generated reports in `reports/`; both are gitignored and tracked in `.artifacts` as portable local state.

@@ -631,7 +631,7 @@ unprocessed_music_dir: /Music/DJ Unprocessed
 dj_library_dir: /Music/DJ Library
 uncategorizable_dir: /Music/DJ Uncategorizable
 duplicates_dir: /Music/DJ Duplicates
-database_path: ~/.dj-sort/library.sqlite3
+database_path: ./db/library.sqlite3
 genre_map_path: ./genres.yaml
 binary_paths:
   ffmpeg: null
@@ -671,6 +671,14 @@ Binary resolution rules:
 3. Required missing binaries fail early with a clear error.
 4. Optional missing binaries disable only the dependent feature.
 5. Resolved binary paths should appear in diagnostic output.
+
+Local artifact convention:
+
+1. `settings.yaml` is local and gitignored because it contains machine-specific paths.
+2. `reports/` is local and gitignored because it contains generated review and dry-run outputs.
+3. `db/` is local and gitignored because it contains the operational SQLite database.
+4. The default SQLite path is `./db/library.sqlite3` so runtime state can be moved with the project when needed.
+5. `.artifacts` lists local artifact paths, currently including `settings.yaml`, `reports/`, and `db/`.
 
 ## CLI Draft
 

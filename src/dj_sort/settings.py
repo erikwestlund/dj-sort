@@ -34,7 +34,7 @@ class Settings(BaseModel):
     dj_library_dir: Path = Field(default=Path("~/Music/DJ Library"), validate_default=True)
     uncategorizable_dir: Path = Field(default=Path("~/Music/DJ Uncategorizable"), validate_default=True)
     duplicates_dir: Path = Field(default=Path("~/Music/DJ Duplicates"), validate_default=True)
-    database_path: Path = Path("~/.dj-sort/library.sqlite3")
+    database_path: Path = Path("./db/library.sqlite3")
     genre_map_path: Path = Path("./genres.yaml")
     binary_paths: BinaryPaths = Field(default_factory=BinaryPaths)
     genre_discovery: GenreDiscoverySettings = Field(default_factory=GenreDiscoverySettings)

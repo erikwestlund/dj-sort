@@ -158,6 +158,7 @@ rg --files "/Volumes/External/DJing/Uncategorizable" -g "*.mp3" -g "*.m4a" -g "*
 
 - Dry-run first unless the previous output is already understood.
 - Source files under `unprocessed_music_dir` are kept in place.
+- Runtime state lives in `db/library.sqlite3`; `db/` is gitignored and listed in `.artifacts` for manual portability.
 - Do not map generic `Other` globally unless every row with that raw genre really means the same thing.
 - Prefer `genres.yaml` for repeatable raw labels.
 - Prefer CSV `update_genre` for track-specific decisions.
