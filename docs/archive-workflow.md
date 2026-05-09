@@ -18,6 +18,19 @@ Extracted archives:
 /Volumes/External/DJing/Unprocessed/Bulla/Extracted Archives
 ```
 
+Completed extracted archives:
+
+```text
+/Volumes/External/DJing/Unprocessed/Bulla/Complete
+```
+
+When an extracted archive is fully processed, move its numbered folder to the sibling `Complete` directory and preserve the same folder name/numbering. For example:
+
+```text
+Extracted Archives/2 - New Vinyl Rips
+Complete/2 - New Vinyl Rips
+```
+
 Checklist and summaries:
 
 ```text

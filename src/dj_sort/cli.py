@@ -133,6 +133,7 @@ def transfer(
     ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Force dry-run mode")] = False,
     write: Annotated[bool, typer.Option("--write", help="Write filesystem and DB changes")] = False,
+    force_genre: Annotated[str | None, typer.Option("--force-genre", help="Route every file in this transfer as this genre")] = None,
     limit: Annotated[int | None, typer.Option("--limit", help="Limit candidate audio files")] = None,
     output_format: OutputFormat = "text",
     output: Annotated[Path | None, typer.Option("--output", help="Write report to file")] = None,
@@ -140,6 +141,7 @@ def transfer(
     """Dry-run or transfer files from a specific directory."""
     start = perf_counter()
     _validate_output_format(output_format)
+    force_genre = _clean_force_genre(force_genre)
     settings = _load(settings_path, limit=limit)
     source_dir = _resolve_scan_dir(settings, base_dir, path)
     settings = settings.model_copy(update={"unprocessed_music_dir": source_dir})
@@ -148,7 +150,7 @@ def transfer(
         effective_dry_run = False
 
     genre_map = GenreMap.load(settings.genre_map_path)
-    planning_result = build_plans(settings, genre_map, limit=settings.limit)
+    planning_result = build_plans(settings, genre_map, limit=settings.limit, genre_override=force_genre)
     if effective_dry_run:
         elapsed = perf_counter() - start
         rendered = _render_structured_or_text(
@@ -417,6 +419,16 @@ def _validate_output_format(output_format: str) -> None:
     if output_format not in {"text", "json", "yaml"}:
         typer.echo(f"Error: unsupported output format: {output_format}", err=True)
         raise typer.Exit(code=1)
+
+
+def _clean_force_genre(force_genre: str | None) -> str | None:
+    if force_genre is None:
+        return None
+    cleaned = force_genre.strip()
+    if cleaned:
+        return cleaned
+    typer.echo("Error: --force-genre cannot be blank", err=True)
+    raise typer.Exit(code=1)
 
 
 def _render_structured_or_text(

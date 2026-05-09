@@ -4,7 +4,7 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from dj_sort.genres import GenreMap
+from dj_sort.genres import GenreMap, GenreResolution
 from dj_sort.metadata import TrackMetadata, is_supported_audio, read_metadata
 from dj_sort.paths import ensure_unique_path, normalize_key, safe_path_part, shorten_filename_stem
 from dj_sort.settings import Settings
@@ -102,13 +102,13 @@ def scan_audio_files(music_dir: Path, recursive: bool, limit: int | None) -> tup
     return candidates, skipped
 
 
-def build_plans(settings: Settings, genre_map: GenreMap, limit: int | None = None) -> PlanningResult:
+def build_plans(settings: Settings, genre_map: GenreMap, limit: int | None = None, genre_override: str | None = None) -> PlanningResult:
     paths, skipped = scan_audio_files(settings.unprocessed_music_dir, settings.recursive, limit)
     occupied: set[Path] = set()
     plans: list[Plan] = []
 
     for path in paths:
-        result = build_plan_for_file(settings, genre_map, path, occupied)
+        result = build_plan_for_file(settings, genre_map, path, occupied, genre_override=genre_override)
         plans.extend(result.plans)
         skipped.extend(result.skipped)
 
@@ -120,20 +120,39 @@ def build_plan_for_file(
     genre_map: GenreMap,
     path: Path,
     occupied: set[Path] | None = None,
+    genre_override: str | None = None,
 ) -> PlanningResult:
     occupied = occupied if occupied is not None else set()
     try:
         metadata = read_metadata(path)
-        genre = genre_map.resolve(metadata.genre, settings.missing_genre_dir)
+        genre = _resolve_genre(settings, genre_map, metadata.genre, genre_override)
         skipped_file = _skip_for_filters(settings, genre_map, metadata, genre)
         if skipped_file is not None:
             return PlanningResult(plans=[], skipped=[skipped_file])
         return PlanningResult(
-            plans=[_build_plan(settings, metadata, occupied, genre, genre_map.is_whitelisted(genre.canonical_genre))],
+            plans=[_build_plan(settings, metadata, occupied, genre, genre_override is not None or genre_map.is_whitelisted(genre.canonical_genre))],
             skipped=[],
         )
     except Exception as exc:  # noqa: BLE001 - per-file failures should not abort planning
         return PlanningResult(plans=[], skipped=[SkippedFile(path=path, reason=f"metadata_error: {exc}")])
+
+
+def _resolve_genre(
+    settings: Settings,
+    genre_map: GenreMap,
+    raw_genre: str | None,
+    genre_override: str | None,
+) -> GenreResolution:
+    if genre_override is None:
+        return genre_map.resolve(raw_genre, settings.missing_genre_dir)
+
+    override = genre_map.resolve(genre_override, settings.missing_genre_dir)
+    return GenreResolution(
+        raw_genre=raw_genre,
+        canonical_genre=override.canonical_genre,
+        mapped=True,
+        missing=False,
+    )
 
 
 def _build_plan(

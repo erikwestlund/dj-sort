@@ -76,9 +76,10 @@ def test_transfer_scopes_input_to_relative_unprocessed_path(tmp_path: Path, monk
     settings_path = _write_settings(tmp_path)
     captured = {}
 
-    def fake_build_plans(settings: Settings, genre_map, limit=None):
+    def fake_build_plans(settings: Settings, genre_map, limit=None, genre_override=None):
         captured["unprocessed_music_dir"] = settings.unprocessed_music_dir
         captured["limit"] = limit
+        captured["genre_override"] = genre_override
         return PlanningResult(plans=[], skipped=[])
 
     monkeypatch.setattr("dj_sort.cli.build_plans", fake_build_plans)
@@ -86,7 +87,24 @@ def test_transfer_scopes_input_to_relative_unprocessed_path(tmp_path: Path, monk
     result = runner.invoke(app, ["transfer", "2026-05-04", "--settings", str(settings_path), "--limit", "10"])
 
     assert result.exit_code == 0
-    assert captured == {"unprocessed_music_dir": tmp_path / "source" / "2026-05-04", "limit": 10}
+    assert captured == {"unprocessed_music_dir": tmp_path / "source" / "2026-05-04", "limit": 10, "genre_override": None}
+    assert "Planned files: 0" in result.stdout
+
+
+def test_transfer_passes_force_genre_to_planning(tmp_path: Path, monkeypatch) -> None:
+    settings_path = _write_settings(tmp_path)
+    captured = {}
+
+    def fake_build_plans(settings: Settings, genre_map, limit=None, genre_override=None):
+        captured["genre_override"] = genre_override
+        return PlanningResult(plans=[], skipped=[])
+
+    monkeypatch.setattr("dj_sort.cli.build_plans", fake_build_plans)
+
+    result = runner.invoke(app, ["transfer", "batch", "--settings", str(settings_path), "--force-genre", " Electro House "])
+
+    assert result.exit_code == 0
+    assert captured == {"genre_override": "Electro House"}
     assert "Planned files: 0" in result.stdout
 
 

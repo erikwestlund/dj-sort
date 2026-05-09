@@ -70,6 +70,29 @@ def test_build_plans_skips_blacklisted_substrings(tmp_path: Path, monkeypatch) -
     assert result.skipped[0].notes == "matched blacklist substring: (Live"
 
 
+def test_build_plans_force_genre_routes_everything_to_library(tmp_path: Path, monkeypatch) -> None:
+    track = tmp_path / "Other Track.mp3"
+    settings = _settings(tmp_path)
+    genre_map_path = tmp_path / "genres.yaml"
+    genre_map_path.write_text("genres:\n  Electro House: Electro House\n", encoding="utf-8")
+    genre_map = GenreMap.load(genre_map_path)
+
+    monkeypatch.setattr("dj_sort.planning.scan_audio_files", lambda source_root, recursive, limit: ([track], []))
+    monkeypatch.setattr(
+        "dj_sort.planning.read_metadata",
+        lambda path: _metadata(path, genre="Other", duration_ms=180_000),
+    )
+
+    result = build_plans(settings, genre_map, genre_override="Electro House")
+
+    assert result.skipped == []
+    assert len(result.plans) == 1
+    assert result.plans[0].raw_genre == "Other"
+    assert result.plans[0].canonical_genre == "Electro House"
+    assert result.plans[0].target_path.parent == settings.dj_library_dir / "Electro House"
+    assert result.plans[0].labels == ()
+
+
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
         unprocessed_music_dir=tmp_path / "source",

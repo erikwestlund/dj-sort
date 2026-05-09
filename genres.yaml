@@ -2,16 +2,21 @@ genres:
   80s: 80s
   140 / Deep Dubstep / Grime: Dubstep
   303-Techno: Acid House/Techno
+  33on45/Breaks: Breaks
   45on33/Breaks: Breaks
   45on33/Breaks/Acid: Breaks
   Acapella: Acapella
   Acid: Acid House/Techno
   Acid House/Techno: Acid House/Techno
   Acid-House: Acid House/Techno
+  Acid Breaks: Acid Breaks
   ACID/Techno: Acid House/Techno
   Acid/Breakbeat: Acid House/Techno
+  Acid/Electro/303: Electro
   Acid/House: Acid House/Techno
+  Acid/House/Breaks: Acid House/Techno
   Ambient: Ambient
+  Atmospheric Jungle: Atmospheric Jungle
   Baltimore Club: Baltimore Club
   Bass: Bass
   Bassline House: Bassline House
@@ -20,41 +25,72 @@ genres:
   Bmore Club: Baltimore Club
   Booty Bass: Bass
   Breaks: Breaks
+  Breaks/303: Breaks
   Breaks / Breakbeat / UK Bass: Breaks
+  Breaks/Big Beat: Breaks
+  Breaks/Baltimore Club: Baltimore Club
   Breaks-Tech Funk: Breaks
   Breaks/Acid: Breaks
+  Breaks/Broken Beat: Breaks
+  Breaks/Electro: Breaks
+  Breaks/Electro/303: Acid Breaks
+  Breaks/Deep: Breaks
+  Breaks/Trip Hop: Trip-hop
   Break-Step: Breaks
   Breakbeat: Breakbeat
+  Breakbeat/303: Breakbeat
+  Breakbeat/DnB/Jungle: Jungle
+  Breakbeat/Drum N' Bass: Drum & Bass
+  Breakbeat/Drum N' Bass/Jungle: Jungle
   Breakbeat Hardcore: Breakbeat Hardcore
   Breakbeat-Broken Beat: Breakbeat
   Breakbeat/Hardcore: Old School Hardcore
-  Breakbeat/Hardcore/Jungle: Old School Hardcore
+  Breakbeat/Hardcore/Jungle: Jungle
+  Breakbeat/Jungle: Jungle
+  Breakbeat/Trip Hop: Trip-hop
   Broken Beat: Breakbeat
+  Broken Beat/Deep Breaks: Breakbeat
+  Broken Beat/Electro: Breakbeat
+  Broken Beat/Nu Jazz: Breakbeat
   Classic House: Classic House
   Club: Baltimore Club
   ClubShit: Baltimore Club
   D&B: Drum & Bass
   Dance Rock: Dance Rock
   Deep House: Deep House
+  Deep House/Broken Beat: Deep House
+  Deep House/Disco: Deep House
+  Deep House/Disco/Dub: Deep House
   Deepshit: Deep House
   Disco: Disco
   Disco House: Disco House
   Disco/Funk: Disco
   Disco/Re-Edit: Disco
   DnB: Drum & Bass
+  DnB/Breakbeat/Jungle: Jungle
+  DnB/Jungle: Jungle
   Downtempo: Downtempo
   Downtempo/Acid Jazz: Downtempo
+  Downtempo/Beatz: Downtempo
+  Downtempo/Breaks: Downtempo
+  Downtempo/Chill-Out/Autonomic: Downtempo
+  Downtempo/Dub: Downtempo
   Downtempo/Hip Hop: Downtempo
+  Downtempo/Trip Hop: Trip-hop
+  Downtempo/Trip Hop/Autonomic: Trip-hop
   Drum & Bass: Drum & Bass
   Drum & Bass/303: Drum & Bass
   Drum & Bass/Amen: Drum & Bass
   Drum & Bass/Atmospheric: Drum & Bass
   Drum & Bass/Autonomic: Drum & Bass
+  Drum & Bass/Autonomic/Dub: Drum & Bass
   Drum & Bass/Club: Drum & Bass
   Drum & Bass/Club/Vocal: Drum & Bass
   Drum & Bass/Dubwise: Drum & Bass
+  Drum & Bass/Jungle: Jungle
   Drum & Bass/Liquid: Drum & Bass
   Drum & Bass/Vocal: Drum & Bass
+  Drum & Bass-Liquid: Drum & Bass
   Drum and Bass: Drum & Bass
   Drum 'n' Bass: Drum & Bass
   Dubstep: Dubstep
@@ -64,6 +100,8 @@ genres:
   Dub-Techno: Techno
   Ed Banger House: Ed Banger House
   Electro: Electro
+  Electro/303: Electro
+  Electro/Acid/303: Electro
   Electro Disco: Electro House
   Electro House: Electro House
   Electro house/electroclash: Electro House
@@ -93,6 +131,7 @@ genres:
   Funky Breaks/Miami Bass: Funky Breaks
   Funky House: Funky House
   Future Bass/Funky: Bass
+  Future Garage/House: UK Garage
   Future Garage/Techno/ACID: Acid House/Techno
   Garage: UK Garage
   Glitch: Glitch
@@ -107,12 +146,22 @@ genres:
   Hard Dance / Hardcore: UK Hardcore
   Hard House: Hard House
   Hardcore D&B: Hardcore D&B
-  Hardcore/Jungle: Old School Hardcore
+  Hardcore/Breakbeat: Old School Hardcore
+  Hardcore/Breakbeat/303: Acid Breaks
+  Hardcore/Drum N' Bass/Jungle: Jungle
+  Hardcore/Jungle: Jungle
   Hip-hop: Hip-Hop
+  Hip Hop: Hip-Hop
   House: House
+  House/303: Acid House/Techno
   House & Electronic: House
   House Music: House
   House/Acid: Acid House/Techno
+  House/Acid/303: Acid House/Techno
+  House/Baltimore Club: Baltimore Club
+  House/Breakbeat: Breakbeat
+  House/Breaks: Breaks
+  House/Garage: UK Garage
   House/Classic: Classic House
   House/Deep: Deep House
   House/Deep/Disco: Deep House
@@ -139,15 +188,20 @@ genres:
   Miami Bass: Miami Bass
   Minimal: Techno
   Nu Disco / Disco: Nu Disco
+  Nu Jazz/Broken Beat: Breakbeat
+  NuJazz: Breakbeat
   Nuskool Baltimore Club: Baltimore Club
   Nuskool Club: Baltimore Club
   Old School Breaks: Old School Breaks
+  Old School Breakbeat: Old School Breaks
   Old School Hardcore: Old School Hardcore
   Old School Techno: Old School Techno
   Old Skool Hardcore: Old School Hardcore
   Old Skool/Hardcore: Old School Hardcore
   Old-School Acid House: Acid House/Techno
   Old-School Breakbeat/Hardcore: Old School Hardcore
+  Old-School Breakbeat: Old School Breaks
+  Old-School Breakbeat/DnB: Old School Breaks
   Old-School Breaks: Old School Breaks
   Old-School Breaks/Acid: Old School Breaks
   Old-School Breaks/Miami Bass: Old School Breaks
@@ -160,18 +214,37 @@ genres:
   Old-School Techno: Old School Techno
   PARTY BEATS: Baltimore Club
   Progressive House: Progressive House
+  Re-Edits/Disco/Funk: Disco
   Speed Garage: UK Garage
   Swing House: Swing House
   Tech House: Tech House
   Tech House/303: Tech House
+  Tech House/Acid/303: Acid House/Techno
   Tech Funk: Tech House
   Tech-Breaks: Breaks
   Tech-Electro: Electro House
   Techno: Techno
+  Techno/303: Acid House/Techno
+  Techno/Acid: Acid House/Techno
+  Techno/Acid/303: Acid House/Techno
+  Techn0/Acid/303: Acid House/Techno
+  Techno/Acid/303/Breaks: Acid House/Techno
+  Techno/Breakbeat: Breaks
+  Techno/Breakbeat/303: Breaks
+  Techno/Breaks: Breaks
+  Techno/Broken Beat: Breakbeat
+  Techno/Broken Beat/Electro: Breakbeat
   Techno-Electro: Electro House
   Techno (Peak Time / Driving): Techno
   Techno/Electro: Electro House
+  Techno/Electro/303: Electro
   Techno-House: Tech House
+  Techno/House: Tech House
+  Techno/House/303: Acid House/Techno
+  Techno/Tech House/303: Tech House
+  Techno/Tech House/Broken Beat: Tech House
+  Techno/Trance: Techno
+  Techno/Trance/303: Acid House/Techno
   TECHNO / HOUSE: Tech House
   Thugstep: Dubstep
   Trance: Trance
