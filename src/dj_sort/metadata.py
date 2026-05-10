@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from mutagen import File
-from mutagen.id3 import COMM, ID3, ID3NoHeaderError
+from mutagen.aiff import AIFF
+from mutagen.id3 import COMM, ID3, ID3NoHeaderError, TCON
+from mutagen.wave import WAVE
 
 SUPPORTED_EXTENSIONS = {".mp3", ".flac", ".m4a", ".aac", ".alac", ".wav", ".aiff", ".aif"}
 CAMELot_RE = re.compile(r"^(?:[1-9]|1[0-2])[AB]$", re.IGNORECASE)
@@ -77,10 +79,12 @@ def is_supported_audio(path: Path) -> bool:
 def read_metadata(path: Path) -> TrackMetadata:
     audio = File(path, easy=True)
     tags = audio.tags if audio is not None and audio.tags is not None else {}
+    if path.suffix.casefold() == ".wav":
+        tags = {**_wav_id3_tags(path), **tags}
     info = audio.info if audio is not None else None
 
-    artist = _first(tags, "artist")
-    title = _first(tags, "title")
+    artist = _first(tags, "artist", "TPE1")
+    title = _first(tags, "title", "TIT2")
     inferred = False
     labels: list[str] = []
 
@@ -102,7 +106,7 @@ def read_metadata(path: Path) -> TrackMetadata:
         title = "Unknown Title"
         labels.append("Unknown Title")
 
-    raw_key = _first(tags, "initialkey", "key")
+    raw_key = _first(tags, "initialkey", "key", "TKEY")
     camelot_key = normalize_camelot_key(raw_key)
     if raw_key and not camelot_key:
         labels.append("Needs Key Review")
@@ -111,14 +115,14 @@ def read_metadata(path: Path) -> TrackMetadata:
         path=path,
         artist=artist,
         title=title,
-        genre=_first(tags, "genre"),
-        bpm=_first(tags, "bpm"),
+        genre=_first(tags, "genre", "TCON"),
+        bpm=_first(tags, "bpm", "TBPM"),
         raw_key=raw_key,
         camelot_key=camelot_key,
-        album=_first(tags, "album"),
-        album_artist=_first(tags, "albumartist", "album artist"),
-        track_number=_first(tags, "tracknumber"),
-        release_date=_first(tags, "date", "year"),
+        album=_first(tags, "album", "TALB"),
+        album_artist=_first(tags, "albumartist", "album artist", "TPE2"),
+        track_number=_first(tags, "tracknumber", "TRCK"),
+        release_date=_first(tags, "date", "year", "TDRC", "TYER"),
         duration_ms=_duration_ms(info),
         bitrate=_int_attr(info, "bitrate"),
         sample_rate=_int_attr(info, "sample_rate"),
@@ -136,7 +140,11 @@ def write_genre(
     original_genre_comment_prefix: str = "dj-sort original genre:",
 ) -> None:
     if path.suffix.casefold() == ".wav":
-        raise ValueError("WAV genre write-back is disabled pending format-specific validation")
+        _write_wav_genre(path, canonical_genre, original_genre, original_genre_comment_prefix)
+        return
+    if path.suffix.casefold() in {".aif", ".aiff"}:
+        _write_aiff_genre(path, canonical_genre, original_genre, original_genre_comment_prefix)
+        return
     audio = File(path, easy=True)
     if audio is None:
         raise ValueError(f"Unsupported metadata write: {path}")
@@ -189,6 +197,60 @@ def _append_id3_comment(path: Path, comment: str) -> None:
     tags.save(path)
 
 
+def _wav_id3_tags(path: Path) -> dict[str, list[str]]:
+    try:
+        tags = WAVE(path).tags
+    except Exception:  # noqa: BLE001 - unreadable optional WAV tags should not block metadata inference
+        return {}
+    if tags is None:
+        return {}
+
+    values: dict[str, list[str]] = {}
+    if genre := [str(text) for frame in tags.getall("TCON") for text in frame.text]:
+        values["genre"] = genre
+    if artist := [str(text) for frame in tags.getall("TPE1") for text in frame.text]:
+        values["artist"] = artist
+    if title := [str(text) for frame in tags.getall("TIT2") for text in frame.text]:
+        values["title"] = title
+    return values
+
+
+def _write_wav_genre(
+    path: Path,
+    canonical_genre: str,
+    original_genre: str | None,
+    original_genre_comment_prefix: str,
+) -> None:
+    audio = WAVE(path)
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.delall("TCON")
+    audio.tags.add(TCON(encoding=3, text=[canonical_genre]))
+    if comment := original_genre_comment(original_genre, canonical_genre, original_genre_comment_prefix):
+        existing = [frame.text[0] for frame in audio.tags.getall("COMM") if frame.text]
+        if comment not in existing:
+            audio.tags.add(COMM(encoding=3, lang="eng", desc="dj-sort", text=[comment]))
+    audio.save()
+
+
+def _write_aiff_genre(
+    path: Path,
+    canonical_genre: str,
+    original_genre: str | None,
+    original_genre_comment_prefix: str,
+) -> None:
+    audio = AIFF(path)
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.delall("TCON")
+    audio.tags.add(TCON(encoding=3, text=[canonical_genre]))
+    if comment := original_genre_comment(original_genre, canonical_genre, original_genre_comment_prefix):
+        existing = [frame.text[0] for frame in audio.tags.getall("COMM") if frame.text]
+        if comment not in existing:
+            audio.tags.add(COMM(encoding=3, lang="eng", desc="dj-sort", text=[comment]))
+    audio.save()
+
+
 def infer_artist_title(path: Path) -> tuple[str | None, str | None]:
     stem = path.stem.strip()
     if stem.count(" - ") == 1:
@@ -224,6 +286,8 @@ def _first(tags: Any, *keys: str) -> str | None:
         value = tags.get(key) if hasattr(tags, "get") else None
         if isinstance(value, list | tuple) and value:
             return str(value[0]).strip() or None
+        if hasattr(value, "text") and value.text:
+            return str(value.text[0]).strip() or None
         if value:
             return str(value).strip() or None
     return None

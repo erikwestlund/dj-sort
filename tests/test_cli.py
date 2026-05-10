@@ -239,6 +239,48 @@ def test_apply_genre_updates_write_removes_stale_uncategorizable_copy(tmp_path: 
     assert "Moved to new destinations: 1" in result.stdout
 
 
+def test_apply_genre_updates_write_deletes_source_and_stale_target(tmp_path: Path) -> None:
+    settings_path = _write_settings(tmp_path)
+    source = tmp_path / "source" / "track.mp3"
+    stale = tmp_path / "uncategorizable" / "Unmapped Genre" / "Artist - Title.mp3"
+    source.parent.mkdir(parents=True)
+    stale.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    stale.write_bytes(b"stale")
+    csv_path = tmp_path / "review.csv"
+    csv_path.write_text(
+        "update_genre,raw_genre,source_path,target_path\n"
+        f"Delete,Other,{source},{stale}\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["apply-genre-updates", str(csv_path), "--settings", str(settings_path), "--write"])
+
+    assert result.exit_code == 0
+    assert source.exists() is False
+    assert stale.exists() is False
+    assert "Deleted source files: 1" in result.stdout
+
+
+def test_apply_genre_updates_dry_run_lists_delete_rows(tmp_path: Path) -> None:
+    settings_path = _write_settings(tmp_path)
+    source = tmp_path / "source" / "track.mp3"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    csv_path = tmp_path / "review.csv"
+    csv_path.write_text(
+        "update_genre,raw_genre,source_path\n"
+        f"Delete,Other,{source}\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["apply-genre-updates", str(csv_path), "--settings", str(settings_path)])
+
+    assert result.exit_code == 0
+    assert "Would update 1 files" in result.stdout
+    assert "Other -> Delete" in result.stdout
+
+
 def test_copy_duplicate_genres_dry_run_lists_curated_updates(tmp_path: Path, monkeypatch) -> None:
     settings_path = _write_settings(tmp_path)
     target = tmp_path / "source" / "batch" / "track.mp3"

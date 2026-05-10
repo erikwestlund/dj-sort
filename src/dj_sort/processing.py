@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from dj_sort import database
 from dj_sort.database import connect, initialize
 from dj_sort.hashing import sha256_audio_payload, sha256_file
-from dj_sort.metadata import write_genre
+from dj_sort.metadata import read_metadata, write_genre
+from dj_sort.paths import ensure_unique_path
 from dj_sort.planning import Plan, PlanningResult
 from dj_sort.settings import Settings
 
@@ -59,6 +60,12 @@ def process_plans(settings: Settings, planning_result: PlanningResult) -> Proces
     processed: list[ProcessedFile] = []
 
     for skipped in planning_result.skipped:
+        if skipped.reason == "delete_genre":
+            if skipped.path.exists():
+                skipped.path.unlink()
+                _remove_empty_parents(skipped.path.parent, settings.unprocessed_music_dir)
+            database.clear_excluded_song(connection, skipped.path)
+            continue
         if skipped.reason in TRACKED_EXCLUSION_REASONS:
             database.save_excluded_song(connection, skipped)
             continue
@@ -98,6 +105,11 @@ def _process_one(settings: Settings, connection, plan: Plan) -> ProcessedFile:
             )
 
         audio_hash = sha256_audio_payload(plan.source_path)
+        if plan.target_path.exists():
+            duplicate_result = _handle_filename_collision(settings, connection, plan, original_hash, audio_hash)
+            if duplicate_result is not None:
+                return duplicate_result
+
         plan.target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(plan.source_path, plan.target_path)
 
@@ -164,6 +176,80 @@ def _should_write_canonical_genre(settings: Settings, plan: Plan) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _handle_filename_collision(
+    settings: Settings,
+    connection,
+    plan: Plan,
+    original_hash: str,
+    audio_hash: str | None,
+) -> ProcessedFile | None:
+    if not _is_under(plan.target_path, settings.dj_library_dir):
+        return None
+
+    existing_metadata = read_metadata(plan.target_path)
+    source_quality = _quality_score(plan.bitrate, plan.sample_rate, plan.file_size)
+    existing_quality = _quality_score(existing_metadata.bitrate, existing_metadata.sample_rate, existing_metadata.file_size)
+    if source_quality > existing_quality:
+        duplicate_path = _duplicate_path_for(settings, plan.target_path)
+        duplicate_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(plan.target_path, duplicate_path)
+        _mark_existing_collision_duplicate(connection, plan.target_path, duplicate_path, "replaced by higher quality filename collision")
+        return None
+
+    duplicate_path = _duplicate_path_for(settings, plan.target_path)
+    duplicate_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(plan.source_path, duplicate_path)
+    if duplicate_path.stat().st_size != plan.source_path.stat().st_size:
+        raise ValueError("copied duplicate file size does not match source")
+    copied_hash = sha256_file(duplicate_path)
+    if copied_hash != original_hash:
+        raise ValueError("copied duplicate file hash does not match source")
+
+    duplicate_plan = replace(plan, target_path=duplicate_path)
+    database.save_processed_song(
+        connection,
+        duplicate_plan,
+        original_hash=original_hash,
+        final_hash=copied_hash,
+        audio_hash=audio_hash,
+        status="duplicate",
+        notes=f"filename collision duplicate; kept existing library file: {plan.target_path}",
+    )
+    return ProcessedFile(
+        source_path=plan.source_path,
+        target_path=duplicate_path,
+        status="duplicate",
+        notes=f"filename collision duplicate; kept existing library file: {plan.target_path}",
+        source_cleanup_status="kept",
+    )
+
+
+def _duplicate_path_for(settings: Settings, library_path: Path) -> Path:
+    try:
+        relative = library_path.relative_to(settings.dj_library_dir)
+    except ValueError:
+        relative = library_path.name
+    target = settings.duplicates_dir / relative
+    return ensure_unique_path(target, set(), str(library_path))
+
+
+def _quality_score(bitrate: int | None, sample_rate: int | None, file_size: int | None) -> tuple[int, int, int]:
+    return (bitrate or 0, sample_rate or 0, file_size or 0)
+
+
+def _mark_existing_collision_duplicate(connection, previous_path: Path, duplicate_path: Path, notes: str) -> None:
+    now = database.utc_now()
+    with connection:
+        connection.execute(
+            """
+            UPDATE song
+            SET current_path = ?, processing_status = ?, processing_notes = ?, updated_at = ?
+            WHERE current_path = ?
+            """,
+            (str(duplicate_path), "duplicate", notes, now, str(previous_path)),
+        )
 
 
 def _should_reprocess_existing(settings: Settings, existing_path: Path, target_path: Path) -> bool:

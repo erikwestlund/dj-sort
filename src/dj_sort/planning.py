@@ -126,6 +126,19 @@ def build_plan_for_file(
     try:
         metadata = read_metadata(path)
         genre = _resolve_genre(settings, genre_map, metadata.genre, genre_override)
+        if genre.canonical_genre is not None and normalize_key(genre.canonical_genre) == "delete":
+            return PlanningResult(
+                plans=[],
+                skipped=[
+                    SkippedFile(
+                        path=path,
+                        reason="delete_genre",
+                        raw_genre=genre.raw_genre,
+                        canonical_genre=genre.canonical_genre,
+                        duration_ms=metadata.duration_ms,
+                    )
+                ],
+            )
         skipped_file = _skip_for_filters(settings, genre_map, metadata, genre)
         if skipped_file is not None:
             return PlanningResult(plans=[], skipped=[skipped_file])
@@ -170,7 +183,11 @@ def _build_plan(
 
     filename = _filename(settings, metadata)
     target = _target_dir(settings, genre, is_curated_genre) / filename
-    unique_target = ensure_unique_path(target, occupied, str(metadata.path))
+    if _is_under(target, settings.dj_library_dir):
+        unique_target = target
+        occupied.add(target)
+    else:
+        unique_target = ensure_unique_path(target, occupied, str(metadata.path))
 
     return Plan(
         source_path=metadata.path,
@@ -260,6 +277,14 @@ def _target_dir(settings: Settings, genre, is_curated_genre: bool) -> Path:
     if not is_curated_genre:
         return settings.uncategorizable_dir / safe_path_part(settings.unmapped_genre_dir)
     return settings.dj_library_dir / safe_path_part(genre.canonical_genre or settings.missing_genre_dir)
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def _filename(settings: Settings, metadata: TrackMetadata) -> str:

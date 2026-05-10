@@ -93,6 +93,27 @@ def test_build_plans_force_genre_routes_everything_to_library(tmp_path: Path, mo
     assert result.plans[0].labels == ()
 
 
+def test_build_plans_skips_delete_genre(tmp_path: Path, monkeypatch) -> None:
+    track = tmp_path / "Delete Track.mp3"
+    settings = _settings(tmp_path)
+    genre_map_path = tmp_path / "genres.yaml"
+    genre_map_path.write_text("genres:\n  Delete: Delete\n", encoding="utf-8")
+    genre_map = GenreMap.load(genre_map_path)
+
+    monkeypatch.setattr("dj_sort.planning.scan_audio_files", lambda source_root, recursive, limit: ([track], []))
+    monkeypatch.setattr(
+        "dj_sort.planning.read_metadata",
+        lambda path: _metadata(path, genre="Delete", duration_ms=180_000),
+    )
+
+    result = build_plans(settings, genre_map)
+
+    assert result.plans == []
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason == "delete_genre"
+    assert result.skipped[0].canonical_genre == "Delete"
+
+
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
         unprocessed_music_dir=tmp_path / "source",

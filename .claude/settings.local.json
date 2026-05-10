@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/bin/ls *)",
+      "Bash(/bin/ls \"/Volumes/External/DJing/Uncategorizable/Missing Genre\")",
+      "Read(//tmp/**)",
+      "Bash(/usr/bin/wc *)",
+      "Bash(/usr/bin/awk -F',' 'NR>1 {print $1}' \"/Users/erik/Projects/dj-sort/reports/unmapped_genre_suggestions.csv\")",
+      "Bash(/usr/bin/sort)",
+      "Bash(/usr/bin/uniq -c)"
+    ]
+  }
+}

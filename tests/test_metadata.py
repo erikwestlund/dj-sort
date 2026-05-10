@@ -1,8 +1,7 @@
+import wave
 from pathlib import Path
 
-import pytest
-
-from dj_sort.metadata import infer_artist_title, normalize_camelot_key, original_genre_comment, write_genre
+from dj_sort.metadata import infer_artist_title, normalize_camelot_key, original_genre_comment, read_metadata, write_genre
 
 
 def test_infer_artist_title_with_spaced_dash() -> None:
@@ -29,9 +28,14 @@ def test_original_genre_comment_only_when_genre_changes() -> None:
     assert original_genre_comment(None, "House") is None
 
 
-def test_wav_genre_write_is_conservative(tmp_path: Path) -> None:
+def test_wav_genre_write_uses_id3_tags(tmp_path: Path) -> None:
     path = tmp_path / "track.wav"
-    path.write_bytes(b"RIFF....WAVE")
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(44100)
+        handle.writeframes(b"\x00\x00" * 100)
 
-    with pytest.raises(ValueError, match="WAV genre write-back is disabled"):
-        write_genre(path, "House")
+    write_genre(path, "House")
+
+    assert read_metadata(path).genre == "House"

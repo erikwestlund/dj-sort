@@ -13,6 +13,7 @@ import yaml
 from dj_sort.consolidation import consolidate_genres
 from dj_sort.database import connect, duplicate_report, excluded_report, initialize
 from dj_sort.genres import GenreMap
+from dj_sort.lookup import discogs_token_available, suggest_genre_for_track
 from dj_sort.metadata import read_metadata, write_genre
 from dj_sort.paths import normalize_key
 from dj_sort.planning import PlanningResult, build_plan_for_file, build_plans, scan_audio_files
@@ -216,6 +217,7 @@ def apply_genre_updates(
     errors = []
     updated = 0
     moved = 0
+    deleted = 0
     skipped = 0
     for row in updates:
         source_path = Path(row["source_path"])
@@ -224,18 +226,123 @@ def apply_genre_updates(
             updated += 1
             if result == "moved":
                 moved += 1
+            elif result == "deleted":
+                deleted += 1
             elif result == "skipped":
                 skipped += 1
         except Exception as exc:  # noqa: BLE001 - continue applying independent CSV rows
             errors.append((source_path, exc))
     typer.echo(f"Updated {updated} source files from {csv_path}")
     typer.echo(f"Moved to new destinations: {moved}")
+    typer.echo(f"Deleted source files: {deleted}")
     typer.echo(f"Skipped re-transfer: {skipped}")
     if errors:
         typer.echo(f"Errors: {len(errors)}", err=True)
         for source_path, exc in errors:
             typer.echo(f"- {source_path}: {exc}", err=True)
         raise typer.Exit(code=1)
+
+
+@app.command("suggest-genres")
+def suggest_genres(
+    csv_path: Annotated[Path, typer.Argument(help="CSV created by export-uncategorizable or a compatible review CSV")],
+    settings_path: SettingsPath = Path("settings.yaml"),
+    output: Annotated[Path | None, typer.Option("--output", help="Write enriched CSV to this path")] = None,
+    review_output: Annotated[Path | None, typer.Option("--review-output", help="Write rows without clear suggestions to this CSV")] = None,
+    limit: Annotated[int | None, typer.Option("--limit", help="Limit lookup rows for testing/rate limits")] = None,
+    fill_empty: Annotated[bool, typer.Option("--fill-empty", help="Copy lookup suggestions into empty update_genre cells")] = False,
+    fill_clear: Annotated[bool, typer.Option("--fill-clear", help="Copy clear lookup suggestions into update_genre and leave unclear rows blank")] = False,
+    musicbrainz: Annotated[bool, typer.Option("--musicbrainz/--no-musicbrainz", help="Fall back to MusicBrainz for Discogs misses")] = True,
+) -> None:
+    """Suggest genres for review CSV rows using Discogs, falling back to MusicBrainz."""
+    settings = _load(settings_path)
+    csv_path = _resolve_genre_update_csv_path(csv_path)
+    rows = _read_genre_update_rows(csv_path)
+    genre_map = GenreMap.load(settings.genre_map_path)
+    output = output or csv_path.with_name(f"{csv_path.stem}-suggestions.csv")
+
+    fieldnames = list(rows[0].keys()) if rows else list(UNCATEGORIZABLE_CSV_FIELDS)
+    for field in ["lookup_genre", "lookup_confidence", "lookup_source", "lookup_terms", "lookup_notes", "lookup_decision"]:
+        if field not in fieldnames:
+            fieldnames.append(field)
+
+    lookup_count = 0
+    suggestion_count = 0
+    clear_count = 0
+    review_rows = []
+    for row in rows:
+        row.setdefault("lookup_genre", "")
+        row.setdefault("lookup_confidence", "")
+        row.setdefault("lookup_source", "")
+        row.setdefault("lookup_terms", "")
+        row.setdefault("lookup_notes", "")
+        row.setdefault("lookup_decision", "")
+        if limit is not None and lookup_count >= limit:
+            if fill_clear:
+                row["update_genre"] = ""
+                row["lookup_decision"] = "needs_review"
+                review_rows.append(dict(row))
+            continue
+        suggestion = suggest_genre_for_track(
+            row.get("artist", ""),
+            row.get("title", ""),
+            genre_map,
+            musicbrainz_fallback=musicbrainz,
+        )
+        lookup_count += 1
+        if suggestion is None:
+            if fill_clear:
+                row["update_genre"] = ""
+                row["lookup_decision"] = "needs_review"
+                review_rows.append(dict(row))
+            continue
+        suggestion_count += 1
+        row["lookup_genre"] = suggestion.genre
+        row["lookup_confidence"] = suggestion.confidence
+        row["lookup_source"] = suggestion.source
+        row["lookup_terms"] = "; ".join(suggestion.terms)
+        row["lookup_notes"] = suggestion.notes
+        clear_lookup = _is_clear_lookup(row)
+        if fill_clear and clear_lookup:
+            row["update_genre"] = suggestion.genre
+            row["lookup_decision"] = "auto"
+            clear_count += 1
+        elif fill_clear:
+            row["update_genre"] = ""
+            row["lookup_decision"] = "needs_review"
+            review_rows.append(dict(row))
+        elif fill_empty and not row.get("update_genre", "").strip():
+            row["update_genre"] = suggestion.genre
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    source_note = "Discogs + MusicBrainz" if discogs_token_available() else "MusicBrainz only; set DISCOGS_TOKEN for Discogs"
+    typer.echo(f"Looked up {lookup_count} rows using {source_note}")
+    typer.echo(f"Found {suggestion_count} suggestions")
+    if fill_clear:
+        typer.echo(f"Auto-filled clear suggestions: {clear_count}")
+        typer.echo(f"Rows needing review: {len(review_rows)}")
+    typer.echo(f"Wrote {output}")
+    if review_output is not None:
+        review_output.parent.mkdir(parents=True, exist_ok=True)
+        with review_output.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(review_rows)
+        typer.echo(f"Wrote {review_output}")
+
+
+def _is_clear_lookup(row: dict[str, str]) -> bool:
+    return bool(
+        row.get("lookup_genre", "").strip()
+        and row.get("lookup_source") == "discogs"
+        and row.get("lookup_confidence") in {"medium", "high"}
+        and row.get("lookup_terms", "").strip()
+    )
 
 
 @app.command("copy-duplicate-genres")
@@ -606,6 +713,11 @@ def _needs_genre_update(settings: Settings, genre_map: GenreMap, row: dict[str, 
     if not update_genre:
         return False
 
+    if _is_delete_update(update_genre):
+        source_path = Path(row["source_path"])
+        old_target_path = Path(row["target_path"]) if row.get("target_path") else None
+        return source_path.exists() or (old_target_path is not None and old_target_path.exists())
+
     source_path = Path(row["source_path"])
     if not source_path.exists():
         return True
@@ -629,6 +741,9 @@ def _apply_genre_update_row(settings: Settings, genre_map: GenreMap, row: dict[s
     update_genre = row["update_genre"].strip()
     if not update_genre:
         return "skipped"
+    if _is_delete_update(update_genre):
+        _delete_update_row(settings, source_path, old_target_path)
+        return "deleted"
 
     write_genre(
         source_path,
@@ -645,11 +760,51 @@ def _apply_genre_update_row(settings: Settings, genre_map: GenreMap, row: dict[s
 
     processing_result = process_plans(settings, PlanningResult(plans=[planning_result.plans[0]], skipped=[]))
     processed = processing_result.processed[0]
-    if processed.status not in {"processed", "needs_review", "unchanged"}:
+    if processed.status not in {"processed", "needs_review", "unchanged", "duplicate"}:
         raise ValueError(f"Re-transfer failed: {processed.notes or processed.status}")
 
     _cleanup_stale_uncategorizable_outputs(settings, source_path, processed.target_path, old_target_path)
     return "moved" if _is_under(processed.target_path, settings.dj_library_dir) else "skipped"
+
+
+def _is_delete_update(update_genre: str) -> bool:
+    return update_genre.strip().casefold() == "delete"
+
+
+def _delete_update_row(settings: Settings, source_path: Path, old_target_path: Path | None) -> None:
+    stale_paths = set()
+    if old_target_path is not None:
+        stale_paths.add(old_target_path)
+
+    connection = connect(settings.database_path)
+    initialize(connection)
+    rows = connection.execute(
+        """
+        SELECT id, current_path
+        FROM song
+        WHERE source_path = ?
+        """,
+        (str(source_path),),
+    ).fetchall()
+    stale_ids = [int(row["id"]) for row in rows]
+    stale_paths.update(Path(row["current_path"]) for row in rows)
+
+    for stale_path in stale_paths:
+        if stale_path.exists():
+            stale_path.unlink()
+            _remove_known_empty_parents(settings, stale_path.parent)
+
+    if source_path.exists():
+        source_path.unlink()
+        _remove_known_empty_parents(settings, source_path.parent)
+
+    if stale_ids:
+        placeholders = ",".join("?" for _ in stale_ids)
+        with connection:
+            connection.execute(f"DELETE FROM song_processing_label WHERE song_id IN ({placeholders})", stale_ids)
+            connection.execute(f"DELETE FROM song_operation_log WHERE song_id IN ({placeholders})", stale_ids)
+            connection.execute(f"DELETE FROM song WHERE id IN ({placeholders})", stale_ids)
+    connection.close()
 
 
 def _has_stale_uncategorizable_output(settings: Settings, source_path: Path, row: dict[str, str]) -> bool:
@@ -733,6 +888,16 @@ def _remove_empty_parents(start: Path, stop: Path) -> None:
         except OSError:
             return
         current = current.parent
+
+
+def _remove_known_empty_parents(settings: Settings, start: Path) -> None:
+    for stop in (settings.uncategorizable_dir, settings.dj_library_dir, settings.unprocessed_music_dir):
+        try:
+            start.resolve().relative_to(stop.resolve())
+        except ValueError:
+            continue
+        _remove_empty_parents(start, stop)
+        return
 
 
 def _duplicate_genre_updates(settings: Settings, genre_map: GenreMap, target_dir: Path, duplicate_dir: Path) -> dict[str, object]:

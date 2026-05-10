@@ -136,6 +136,35 @@ def test_processing_records_tracked_exclusions(tmp_path: Path) -> None:
     assert row["reason"] == "duration_exceeds_max"
 
 
+def test_processing_deletes_delete_genre_skips(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    library = tmp_path / "library"
+    uncategorizable = tmp_path / "uncategorizable"
+    source.mkdir()
+    track = source / "Delete Me.mp3"
+    track.write_bytes(b"delete")
+    settings = _settings(source, library, uncategorizable, tmp_path / "db.sqlite3")
+
+    result = process_plans(
+        settings,
+        PlanningResult(
+            plans=[],
+            skipped=[
+                SkippedFile(
+                    path=track,
+                    reason="delete_genre",
+                    raw_genre="Delete",
+                    canonical_genre="Delete",
+                    duration_ms=180_000,
+                )
+            ],
+        ),
+    )
+
+    assert result.processed == []
+    assert track.exists() is False
+
+
 def test_processing_records_blacklist_exclusion_notes(tmp_path: Path) -> None:
     source = tmp_path / "source"
     library = tmp_path / "library"
