@@ -8,6 +8,7 @@ from typing import Any
 from mutagen import File
 from mutagen.aiff import AIFF
 from mutagen.id3 import COMM, ID3, ID3NoHeaderError, TCON
+from mutagen.mp4 import MP4FreeForm
 from mutagen.wave import WAVE
 
 SUPPORTED_EXTENSIONS = {".mp3", ".flac", ".m4a", ".aac", ".alac", ".wav", ".aiff", ".aif"}
@@ -79,6 +80,10 @@ def is_supported_audio(path: Path) -> bool:
 def read_metadata(path: Path) -> TrackMetadata:
     audio = File(path, easy=True)
     tags = audio.tags if audio is not None and audio.tags is not None else {}
+    if path.suffix.casefold() == ".mp3":
+        tags = {**_mp3_id3_tags(path), **tags}
+    if path.suffix.casefold() in {".m4a", ".aac", ".alac"}:
+        tags = {**_mp4_extra_tags(path), **tags}
     if path.suffix.casefold() == ".wav":
         tags = {**_wav_id3_tags(path), **tags}
     info = audio.info if audio is not None else None
@@ -195,6 +200,43 @@ def _append_id3_comment(path: Path, comment: str) -> None:
     if comment not in existing:
         tags.add(COMM(encoding=3, lang="eng", desc="dj-sort", text=[comment]))
     tags.save(path)
+
+
+def _mp3_id3_tags(path: Path) -> dict[str, list[str]]:
+    try:
+        tags = ID3(path)
+    except ID3NoHeaderError:
+        return {}
+
+    values: dict[str, list[str]] = {}
+    if key := [str(text) for frame in tags.getall("TKEY") for text in frame.text]:
+        values["initialkey"] = key
+    if bpm := [str(text) for frame in tags.getall("TBPM") for text in frame.text]:
+        values["bpm"] = bpm
+    return values
+
+
+def _mp4_extra_tags(path: Path) -> dict[str, list[str]]:
+    audio = File(path)
+    tags = audio.tags if audio is not None and audio.tags is not None else {}
+    values: dict[str, list[str]] = {}
+    for key in ("----:com.apple.iTunes:initialkey", "----:com.mixedinkey.mixedinkey:initialkey"):
+        if extracted := _mp4_freeform_text(tags.get(key)):
+            values["initialkey"] = extracted
+            break
+    return values
+
+
+def _mp4_freeform_text(values: Any) -> list[str]:
+    if not isinstance(values, list | tuple):
+        return []
+    result: list[str] = []
+    for value in values:
+        if isinstance(value, MP4FreeForm | bytes):
+            result.append(bytes(value).decode("utf-8", errors="ignore").strip())
+        elif value:
+            result.append(str(value).strip())
+    return [value for value in result if value]
 
 
 def _wav_id3_tags(path: Path) -> dict[str, list[str]]:

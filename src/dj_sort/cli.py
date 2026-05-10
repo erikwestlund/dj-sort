@@ -13,8 +13,10 @@ import yaml
 from dj_sort.consolidation import consolidate_genres
 from dj_sort.database import connect, duplicate_report, excluded_report, initialize
 from dj_sort.genres import GenreMap
+from dj_sort.hashing import sha256_file
 from dj_sort.lookup import discogs_token_available, suggest_genre_for_track
 from dj_sort.metadata import read_metadata, write_genre
+from dj_sort.mixedinkey import MixedInKeyUpdate, apply_mixed_in_key_update
 from dj_sort.paths import normalize_key
 from dj_sort.planning import PlanningResult, build_plan_for_file, build_plans, scan_audio_files
 from dj_sort.processing import process_plans
@@ -167,6 +169,52 @@ def transfer(
     elapsed = perf_counter() - start
     rendered = _render_structured_or_text(result.to_dict(), _render_process_text(result), output_format, elapsed)
     write_or_print(rendered, output)
+
+
+@app.command("import-mixed-in-key")
+def import_mixed_in_key(
+    path: Annotated[Path, typer.Argument(help="Library path analyzed by Mixed In Key, relative to --base-dir unless absolute")] = Path("."),
+    settings_path: SettingsPath = Path("settings.yaml"),
+    base_dir: Annotated[
+        str | None,
+        typer.Option("--base-dir", help="Base directory: dj_library/uncategorizable/duplicates/unprocessed or absolute"),
+    ] = "dj_library",
+    write: Annotated[bool, typer.Option("--write", help="Write metadata, rename files, and update the database")] = False,
+    include_energy: Annotated[bool, typer.Option("--include-energy/--no-include-energy", help="Include E<score> in filenames")] = True,
+    limit: Annotated[int | None, typer.Option("--limit", help="Limit candidate audio files")] = None,
+) -> None:
+    """Import Mixed In Key comment/key/BPM/energy data and rename analyzed files."""
+    settings = _load(settings_path, limit=limit)
+    source_dir = _resolve_scan_dir(settings, base_dir, path)
+    files, skipped_scan = scan_audio_files(source_dir, settings.recursive, settings.limit)
+
+    updates: list[MixedInKeyUpdate] = []
+    for audio_path in files:
+        updates.append(apply_mixed_in_key_update(audio_path, include_energy=include_energy, write=write))
+
+    if write:
+        _update_mixed_in_key_database(settings, updates)
+
+    planned = [update for update in updates if update.status in {"planned", "updated"}]
+    skipped = [update for update in updates if update.status == "skipped"]
+    renamed = [update for update in planned if update.changed_path]
+    action = "Updated" if write else "Would update"
+    typer.echo(f"{action} {len(planned)} files from Mixed In Key metadata")
+    typer.echo(f"Renamed files: {len(renamed)}")
+    typer.echo(f"Skipped files: {len(skipped) + len(skipped_scan)}")
+    for update in planned:
+        info = update.info
+        suffix = f" ({info.key}, {info.bpm} BPM, energy {info.energy})" if info else ""
+        if update.changed_path:
+            typer.echo(f"- {update.source_path} -> {update.target_path}{suffix}")
+        else:
+            typer.echo(f"- {update.source_path}{suffix}")
+    if skipped:
+        typer.echo("Skipped:")
+        for update in skipped:
+            typer.echo(f"- {update.source_path}: {update.notes}")
+    for skipped_file in skipped_scan:
+        typer.echo(f"- {skipped_file.path}: {skipped_file.reason}")
 
 
 @app.command("export-uncategorizable")
@@ -549,6 +597,47 @@ def _render_structured_or_text(
     if output_format == "yaml":
         return yaml.safe_dump(add_report_metadata(payload, elapsed_seconds), sort_keys=False)
     return append_elapsed(text, elapsed_seconds)
+
+
+def _update_mixed_in_key_database(settings: Settings, updates: list[MixedInKeyUpdate]) -> None:
+    connection = connect(settings.database_path)
+    initialize(connection)
+    try:
+        with connection:
+            for update in updates:
+                if update.status != "updated" or update.info is None:
+                    continue
+                metadata = read_metadata(update.target_path)
+                row = connection.execute(
+                    "SELECT id FROM song WHERE current_path = ?",
+                    (str(update.source_path),),
+                ).fetchone()
+                if row is None:
+                    row = connection.execute(
+                        "SELECT id FROM song WHERE current_path = ?",
+                        (str(update.target_path),),
+                    ).fetchone()
+                if row is None:
+                    continue
+                connection.execute(
+                    """
+                    UPDATE song
+                    SET current_path = ?, bpm = ?, raw_musical_key = ?, musical_key = ?,
+                        file_hash_with_metadata = ?, file_size = ?, updated_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    (
+                        str(update.target_path),
+                        update.info.bpm,
+                        update.info.key,
+                        metadata.camelot_key or update.info.key,
+                        sha256_file(update.target_path),
+                        update.target_path.stat().st_size,
+                        int(row["id"]),
+                    ),
+                )
+    finally:
+        connection.close()
 
 
 def _load(
