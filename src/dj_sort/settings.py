@@ -29,6 +29,19 @@ class GenreConsolidationSettings(BaseModel):
     mappings: dict[str, str] = Field(default_factory=dict)
 
 
+class NavidromeSettings(BaseModel):
+    host: str = "dj.lan"
+    library_root: Path = Path("/srv/dj-library/Library")
+    playlist_root: Path = Path("/srv/dj-library/Library/_Playlists")
+    output_dir: Path | None = None
+    include_extm3u_header: bool = True
+
+    @field_validator("library_root", "playlist_root", "output_dir", mode="before")
+    @classmethod
+    def expand_paths(cls, value: str | Path | None) -> Path | None:
+        return Path(value).expanduser() if value is not None else None
+
+
 class Settings(BaseModel):
     unprocessed_music_dir: Path
     dj_library_dir: Path = Field(default=Path("~/Music/DJ Library"), validate_default=True)
@@ -59,6 +72,7 @@ class Settings(BaseModel):
     max_duration_minutes: float | None = Field(default=15, gt=0)
     blacklist_substrings: list[str] = Field(default_factory=list)
     remove_empty_genre_dirs: bool = False
+    navidrome: NavidromeSettings = Field(default_factory=NavidromeSettings)
     genre_consolidation: GenreConsolidationSettings = Field(
         default_factory=GenreConsolidationSettings
     )
