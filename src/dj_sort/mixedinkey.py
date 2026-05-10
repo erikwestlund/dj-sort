@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from itertools import count
 from pathlib import Path
 from typing import Any
 
 from mutagen import File
-from mutagen.id3 import COMM, ID3, ID3NoHeaderError, TBPM, TKEY, TXXX
+from mutagen.id3 import COMM, ID3, TBPM, TKEY, TXXX, ID3NoHeaderError
 from mutagen.mp4 import MP4, MP4FreeForm
 
 from dj_sort.metadata import read_metadata
-from dj_sort.paths import ensure_unique_path, safe_path_part, shorten_filename_stem
+from dj_sort.paths import safe_path_part, shorten_filename_stem
 
 MIXED_IN_KEY_COMMENT_RE = re.compile(
     r"^\s*(?P<key>0?(?:[1-9]|1[0-2])[AB])\s*-\s*(?P<bpm>\d+(?:\.\d+)?)\s*-\s*(?P<energy>10|[1-9])(?:\s*-\s*(?P<rest>.*))?\s*$",
@@ -78,16 +79,36 @@ def mixed_in_key_target_path(path: Path, info: MixedInKeyInfo, include_energy: b
     return path.with_name(f"{stem}{path.suffix.casefold()}")
 
 
-def apply_mixed_in_key_update(path: Path, include_energy: bool = True, write: bool = False) -> MixedInKeyUpdate:
+def apply_mixed_in_key_update(
+    path: Path,
+    include_energy: bool = True,
+    write: bool = False,
+    duplicates_dir: Path | None = None,
+    library_dir: Path | None = None,
+) -> MixedInKeyUpdate:
     info = read_mixed_in_key_info(path)
     if info is None:
         return MixedInKeyUpdate(path, path, None, False, False, "skipped", "missing Mixed In Key comment or tags")
 
     target_path = mixed_in_key_target_path(path, info, include_energy=include_energy)
-    if target_path != path:
-        target_path = ensure_unique_path(target_path, occupied={path}, suffix_seed=str(path))
-
     changed_path = target_path != path
+    if changed_path and target_path.exists():
+        same_bitrate = _same_bitrate(path, target_path)
+        if not write:
+            status = "planned_deleted_duplicate" if same_bitrate else "planned_moved_duplicate"
+            notes = "same bitrate duplicate" if same_bitrate else f"different bitrate duplicate of {target_path}"
+            return MixedInKeyUpdate(path, target_path, info, False, same_bitrate is False, status, notes)
+        if same_bitrate:
+            path.unlink()
+            return MixedInKeyUpdate(path, target_path, info, False, False, "deleted_duplicate", "same bitrate duplicate")
+        if duplicates_dir is None:
+            return MixedInKeyUpdate(path, target_path, info, False, False, "skipped", "different bitrate duplicate needs duplicates_dir")
+        duplicate_path = _duplicate_target_path(path, target_path, duplicates_dir, library_dir)
+        duplicate_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_mixed_in_key_tags(path, info)
+        path.rename(duplicate_path)
+        return MixedInKeyUpdate(path, duplicate_path, info, True, True, "moved_duplicate", f"different bitrate duplicate of {target_path}")
+
     if not write:
         return MixedInKeyUpdate(path, target_path, info, True, changed_path, "planned")
 
@@ -95,6 +116,30 @@ def apply_mixed_in_key_update(path: Path, include_energy: bool = True, write: bo
     if changed_path:
         path.rename(target_path)
     return MixedInKeyUpdate(path, target_path, info, True, changed_path, "updated")
+
+
+def _same_bitrate(path: Path, other_path: Path) -> bool:
+    return read_metadata(path).bitrate == read_metadata(other_path).bitrate
+
+
+def _duplicate_target_path(path: Path, clean_target_path: Path, duplicates_dir: Path, library_dir: Path | None) -> Path:
+    if library_dir is not None:
+        try:
+            relative_parent = path.parent.relative_to(library_dir)
+        except ValueError:
+            relative_parent = Path()
+    else:
+        relative_parent = Path()
+    return _unique_non_hash_path(duplicates_dir / relative_parent / clean_target_path.name)
+
+
+def _unique_non_hash_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in count(2):
+        candidate = path.with_name(f"{path.stem} - duplicate {index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
 
 
 def _comments(path: Path) -> list[str]:

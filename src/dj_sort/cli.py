@@ -190,17 +190,33 @@ def import_mixed_in_key(
 
     updates: list[MixedInKeyUpdate] = []
     for audio_path in files:
-        updates.append(apply_mixed_in_key_update(audio_path, include_energy=include_energy, write=write))
+        updates.append(
+            apply_mixed_in_key_update(
+                audio_path,
+                include_energy=include_energy,
+                write=write,
+                duplicates_dir=settings.duplicates_dir,
+                library_dir=settings.dj_library_dir,
+            )
+        )
 
     if write:
         _update_mixed_in_key_database(settings, updates)
 
-    planned = [update for update in updates if update.status in {"planned", "updated"}]
+    planned = [
+        update
+        for update in updates
+        if update.status in {"planned", "updated", "planned_deleted_duplicate", "planned_moved_duplicate", "deleted_duplicate", "moved_duplicate"}
+    ]
     skipped = [update for update in updates if update.status == "skipped"]
     renamed = [update for update in planned if update.changed_path]
+    deleted_duplicates = [update for update in planned if update.status in {"planned_deleted_duplicate", "deleted_duplicate"}]
+    moved_duplicates = [update for update in planned if update.status in {"planned_moved_duplicate", "moved_duplicate"}]
     action = "Updated" if write else "Would update"
     typer.echo(f"{action} {len(planned)} files from Mixed In Key metadata")
     typer.echo(f"Renamed files: {len(renamed)}")
+    typer.echo(f"Deleted same-bitrate duplicates: {len(deleted_duplicates)}")
+    typer.echo(f"Moved different-bitrate duplicates: {len(moved_duplicates)}")
     typer.echo(f"Skipped files: {len(skipped) + len(skipped_scan)}")
     for update in planned:
         info = update.info
