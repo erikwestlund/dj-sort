@@ -33,5 +33,16 @@ filename_template: "{artist} - {title} - {bpm} - {key}.{ext}"
 max_duration_minutes: 15
 blacklist_substrings: []
 remove_empty_genre_dirs: false
+navidrome:
+  host: dj.lan
+  # Path used inside the Navidrome container. This is normally the container's MusicFolder.
+  library_root: /music
+  # Host path where generated .m3u files should be written. With Navidrome, this folder
+  # should also be visible under MusicFolder and ND_PLAYLISTSPATH should be relative to MusicFolder.
+  playlist_root: /srv/dj-library/Library/_Playlists
+  # Optional local output dir for dry-run/review on a workstation. Set to null to write to playlist_root.
+  output_dir: ./reports/navidrome-playlists
+  include_extm3u_header: true
+  playlist_name_prefix: "Uncurated: "
 genre_consolidation:
   mappings: {}

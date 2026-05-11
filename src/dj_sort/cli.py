@@ -18,6 +18,7 @@ from dj_sort.lookup import discogs_token_available, suggest_genre_for_track
 from dj_sort.metadata import read_metadata, write_genre
 from dj_sort.mixedinkey import MixedInKeyUpdate, apply_mixed_in_key_update
 from dj_sort.paths import normalize_key
+from dj_sort.playlists import export_genre_playlists
 from dj_sort.planning import PlanningResult, build_plan_for_file, build_plans, scan_audio_files
 from dj_sort.processing import process_plans
 from dj_sort.reports import add_report_metadata, append_elapsed, discover_genres, render_genre_discovery, render_planning_result, write_or_print
@@ -230,7 +231,64 @@ def import_mixed_in_key(
         for update in skipped:
             typer.echo(f"- {update.source_path}: {update.notes}")
     for skipped_file in skipped_scan:
-        typer.echo(f"- {skipped_file.path}: {skipped_file.reason}")
+            typer.echo(f"- {skipped_file.path}: {skipped_file.reason}")
+
+
+@app.command("export-navidrome-playlists")
+def export_navidrome_playlists(
+    settings_path: SettingsPath = Path("settings.yaml"),
+    local_library_root: Annotated[
+        Path | None,
+        typer.Option("--local-library-root", help="Local Library folder to scan; defaults to dj_library_dir"),
+    ] = None,
+    server_library_root: Annotated[
+        Path | None,
+        typer.Option("--server-library-root", help="Library path as Navidrome sees it"),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", help="Where to write .m3u files; defaults to navidrome.output_dir or playlist_root"),
+    ] = None,
+    playlist_root: Annotated[
+        Path | None,
+        typer.Option("--playlist-root", help="Server playlist folder, used when --output-dir is omitted"),
+    ] = None,
+    write: Annotated[bool, typer.Option("--write", help="Write .m3u files; otherwise dry-run")] = False,
+    playlist_name_prefix: Annotated[
+        str | None,
+        typer.Option("--playlist-name-prefix", help="Prefix for generated playlist names, e.g. 'Uncurated: '"),
+    ] = None,
+) -> None:
+    """Generate Navidrome-compatible genre .m3u playlists from the library."""
+    settings = _load(settings_path)
+    local_root = (local_library_root or settings.dj_library_dir).expanduser()
+    server_root = (server_library_root or settings.navidrome.library_root).expanduser()
+    playlist_root = (playlist_root or settings.navidrome.playlist_root).expanduser()
+    output_root = (output_dir or settings.navidrome.output_dir or playlist_root).expanduser()
+    playlist_root_name = playlist_root.name
+
+    try:
+        exports = export_genre_playlists(
+            local_root,
+            server_root,
+            output_root,
+            playlist_root_name=playlist_root_name,
+            include_extm3u_header=settings.navidrome.include_extm3u_header,
+            playlist_name_prefix=(
+                settings.navidrome.playlist_name_prefix if playlist_name_prefix is None else playlist_name_prefix
+            ),
+            write=write,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise filesystem errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    action = "Wrote" if write else "Would write"
+    typer.echo(f"{action} {len(exports)} Navidrome playlists for {settings.navidrome.host}")
+    typer.echo(f"Local library root: {local_root}")
+    typer.echo(f"Server library root: {server_root}")
+    typer.echo(f"Playlist output dir: {output_root}")
+    for export in exports:
+        typer.echo(f"- {export.path}: {export.track_count} tracks")
 
 
 @app.command("export-uncategorizable")
