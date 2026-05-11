@@ -238,6 +238,10 @@ def export_navidrome_playlists(
         typer.Option("--playlist-root", help="Server playlist folder, used when --output-dir is omitted"),
     ] = None,
     write: Annotated[bool, typer.Option("--write", help="Write .m3u files; otherwise dry-run")] = False,
+    playlist_name_prefix: Annotated[
+        str | None,
+        typer.Option("--playlist-name-prefix", help="Prefix for generated playlist names, e.g. 'Uncurated: '"),
+    ] = None,
 ) -> None:
     """Generate Navidrome-compatible genre .m3u playlists from the library."""
     settings = _load(settings_path)
@@ -254,6 +258,9 @@ def export_navidrome_playlists(
             output_root,
             playlist_root_name=playlist_root_name,
             include_extm3u_header=settings.navidrome.include_extm3u_header,
+            playlist_name_prefix=(
+                settings.navidrome.playlist_name_prefix if playlist_name_prefix is None else playlist_name_prefix
+            ),
             write=write,
         )
     except Exception as exc:  # noqa: BLE001 - CLI should present concise filesystem errors

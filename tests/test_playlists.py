@@ -19,15 +19,16 @@ def test_export_genre_playlists_writes_server_paths(tmp_path: Path) -> None:
         library,
         Path("/srv/dj-library/Library"),
         playlist_dir,
+        playlist_name_prefix="Uncurated: ",
         write=True,
     )
 
-    assert [(export.name, export.track_count) for export in exports] == [("House", 1), ("Techno", 1)]
+    assert [(export.name, export.track_count) for export in exports] == [("Uncurated: House", 1), ("Uncurated: Techno", 1)]
     assert (playlist_dir / "Old.m3u").exists() is False
-    assert (playlist_dir / "House.m3u").read_text(encoding="utf-8") == (
+    assert (playlist_dir / "Uncurated: House.m3u").read_text(encoding="utf-8") == (
         "#EXTM3U\n/srv/dj-library/Library/House/Track A.mp3\n"
     )
-    assert (playlist_dir / "Techno.m3u").read_text(encoding="utf-8") == (
+    assert (playlist_dir / "Uncurated: Techno.m3u").read_text(encoding="utf-8") == (
         "#EXTM3U\n/srv/dj-library/Library/Techno/Track B.m4a\n"
     )
 

@@ -31,10 +31,11 @@ class GenreConsolidationSettings(BaseModel):
 
 class NavidromeSettings(BaseModel):
     host: str = "dj.lan"
-    library_root: Path = Path("/srv/dj-library/Library")
+    library_root: Path = Path("/music")
     playlist_root: Path = Path("/srv/dj-library/Library/_Playlists")
     output_dir: Path | None = None
     include_extm3u_header: bool = True
+    playlist_name_prefix: str = "Uncurated: "
 
     @field_validator("library_root", "playlist_root", "output_dir", mode="before")
     @classmethod

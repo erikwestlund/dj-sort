@@ -32,6 +32,7 @@ Happy Path:
 - Supports dry-run mode by default.
 - Supports `--limit` for safe batch processing.
 - Supports after-the-fact genre consolidation for managed files.
+- Exports Navidrome-compatible `.m3u` playlists for genre folders.
 
 ## Install
 
@@ -94,6 +95,7 @@ Important settings:
 - `limit`: process only N candidate audio files.
 - `duplicate_policy`: `exact_only`, `potential_too`, or `report_only`.
 - `preserve_original_genre_in_comment`: when canonical genre write-back changes a curated file's genre, append the raw genre to comments.
+- `navidrome`: server/path settings for generating Navidrome `.m3u` playlists.
 
 Edit `genres.yaml`:
 
@@ -255,6 +257,22 @@ uv run dj-sort genres consolidate --settings settings.yaml --from "DnB" --to "Dr
 
 Genre consolidation updates managed file genre metadata, moves files to the target genre directory, and updates SQLite.
 
+### Navidrome Playlists
+
+Dry-run generated genre playlists:
+
+```bash
+uv run dj-sort export-navidrome-playlists --settings settings.yaml
+```
+
+Write playlists from a machine that can see the library path:
+
+```bash
+uv run dj-sort export-navidrome-playlists --settings settings.yaml --write
+```
+
+For the current `dj.lan` setup, playlists are generated under Navidrome's music folder as `_Playlists` and named with the `Uncurated: ` prefix. See `docs/navidrome-playlists.md` for the full server workflow, Docker Compose requirements, SSH regeneration script, and verification commands.
+
 ## Safety Model
 
 - Dry run is the default.
@@ -292,6 +310,7 @@ Project docs:
 - `docs/checklist.md`: build checklist and remaining work.
 - `docs/workflow.md`: fast batch processing and genre review workflow.
 - `docs/archive-workflow.md`: archive extraction and numbered-batch workflow.
+- `docs/navidrome-playlists.md`: Navidrome playlist generation, import, and verification workflow.
 
 Local artifact convention:
 

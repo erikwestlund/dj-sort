@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dj_sort.metadata import is_supported_audio
-from dj_sort.paths import safe_path_part
 
 
 @dataclass(frozen=True)
@@ -20,6 +19,7 @@ def export_genre_playlists(
     output_dir: Path,
     playlist_root_name: str = "_Playlists",
     include_extm3u_header: bool = True,
+    playlist_name_prefix: str = "",
     write: bool = False,
 ) -> list[PlaylistExport]:
     if not local_library_root.exists():
@@ -37,8 +37,9 @@ def export_genre_playlists(
         tracks = _audio_files(genre_dir)
         if not tracks:
             continue
-        playlist_path = output_dir / f"{safe_path_part(genre_dir.name)}.m3u"
-        exports.append(PlaylistExport(name=genre_dir.name, path=playlist_path, track_count=len(tracks)))
+        playlist_name = f"{playlist_name_prefix}{genre_dir.name}"
+        playlist_path = output_dir / f"{_playlist_file_stem(playlist_name)}.m3u"
+        exports.append(PlaylistExport(name=playlist_name, path=playlist_path, track_count=len(tracks)))
         if write:
             _write_playlist(
                 playlist_path,
@@ -63,3 +64,10 @@ def _write_playlist(path: Path, tracks: list[str], include_extm3u_header: bool) 
     lines = ["#EXTM3U"] if include_extm3u_header else []
     lines.extend(tracks)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _playlist_file_stem(name: str) -> str:
+    cleaned = " ".join(name.split()).strip(" .")
+    for char in ('/', '\\', '\x00'):
+        cleaned = cleaned.replace(char, "_")
+    return cleaned or "Playlist"
