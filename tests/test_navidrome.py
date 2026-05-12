@@ -182,6 +182,63 @@ def test_favorite_rated_five_stars_unstarred_rating_five_tracks(tmp_path: Path, 
     assert "Favorited 1 rated-5 tracks for erik" in result.stdout
 
 
+def test_sync_curation_write_favorites_rated_five_before_sync(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "navidrome.db"
+    _write_navidrome_db(db_path)
+    settings_path = _write_curation_settings(tmp_path, database_path=db_path)
+    fake = FakeNavidromeClient()
+    sync_calls = []
+
+    def fake_sync(settings, navidrome_database_path: Path, username: str, **kwargs) -> CurationSyncResult:
+        sync_calls.append((navidrome_database_path, username, kwargs))
+        return CurationSyncResult(dry_run=False)
+
+    monkeypatch.setattr("dj_sort.cli._navidrome_client", lambda settings: fake)
+    monkeypatch.setattr("dj_sort.cli.sync_navidrome_curation", fake_sync)
+
+    result = runner.invoke(app, ["sync-navidrome-curation", "--settings", str(settings_path), "--write", "--no-rescan"])
+
+    assert result.exit_code == 0
+    assert fake.starred == ["song-1"]
+    assert sync_calls[0][0] == db_path
+    assert "Favorited 1 rated-5 tracks for erik" in result.stdout
+
+
+def test_sync_curation_write_refreshes_ssh_snapshot_after_favoriting(tmp_path: Path, monkeypatch) -> None:
+    settings_path = _write_curation_settings(tmp_path, database_ssh="erik@example:/srv/navidrome/navidrome.db")
+    fake = FakeNavidromeClient()
+    copy_calls = []
+    sync_starred_values = []
+
+    def fake_copy(source: str, target: Path, identity_file: Path | None = None) -> None:
+        copy_calls.append(source)
+        target.unlink(missing_ok=True)
+        _write_navidrome_db(target)
+        if fake.starred:
+            connection = sqlite3.connect(target)
+            with connection:
+                connection.execute("UPDATE annotation SET starred = 1 WHERE item_id = 'song-1'")
+            connection.close()
+
+    def fake_sync(settings, navidrome_database_path: Path, username: str, **kwargs) -> CurationSyncResult:
+        connection = sqlite3.connect(navidrome_database_path)
+        starred = connection.execute("SELECT starred FROM annotation WHERE item_id = 'song-1'").fetchone()[0]
+        connection.close()
+        sync_starred_values.append(starred)
+        return CurationSyncResult(dry_run=False, source=kwargs.get("source_name", "database"))
+
+    monkeypatch.setattr("dj_sort.cli._copy_navidrome_database_over_ssh", fake_copy)
+    monkeypatch.setattr("dj_sort.cli._navidrome_client", lambda settings: fake)
+    monkeypatch.setattr("dj_sort.cli.sync_navidrome_curation", fake_sync)
+
+    result = runner.invoke(app, ["sync-navidrome-curation", "--settings", str(settings_path), "--write", "--no-rescan"])
+
+    assert result.exit_code == 0
+    assert fake.starred == ["song-1"]
+    assert copy_calls == ["erik@example:/srv/navidrome/navidrome.db", "erik@example:/srv/navidrome/navidrome.db"]
+    assert sync_starred_values == [1]
+
+
 def test_sync_curation_auto_falls_back_to_ssh_when_configured_db_is_missing(tmp_path: Path, monkeypatch) -> None:
     settings_path = _write_curation_settings(
         tmp_path,

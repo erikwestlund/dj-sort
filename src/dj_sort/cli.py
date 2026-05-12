@@ -1076,6 +1076,8 @@ def _sync_navidrome_curation_from_source(
                 raise
         else:
             if resolved_database_path.exists():
+                if write:
+                    _favorite_rated_five_from_database(settings, resolved_database_path, username)
                 return sync_navidrome_curation(
                     settings,
                     resolved_database_path,
@@ -1091,7 +1093,10 @@ def _sync_navidrome_curation_from_source(
     if normalized_source in {"auto", "ssh"} and ssh_source:
         with tempfile.TemporaryDirectory(prefix="dj-sort-navidrome-") as temp_dir:
             snapshot_path = Path(temp_dir) / "navidrome.db"
-            _copy_navidrome_database_over_ssh(ssh_source, snapshot_path, _navidrome_database_ssh_identity_file(settings, ssh_identity_file))
+            identity_file = _navidrome_database_ssh_identity_file(settings, ssh_identity_file)
+            _copy_navidrome_database_over_ssh(ssh_source, snapshot_path, identity_file)
+            if write and _favorite_rated_five_from_database(settings, snapshot_path, username):
+                _copy_navidrome_database_over_ssh(ssh_source, snapshot_path, identity_file)
             result = sync_navidrome_curation(
                 settings,
                 snapshot_path,
@@ -1123,6 +1128,18 @@ def _navidrome_api_credentials_available(settings: Settings) -> bool:
     username = settings.navidrome.username or os.environ.get("NAVIDROME_USER") or os.environ.get("NAVIDROME_USERNAME")
     password = settings.navidrome.password or os.environ.get("NAVIDROME_PASSWORD")
     return bool(username and password)
+
+
+def _favorite_rated_five_from_database(settings: Settings, database_path: Path, username: str) -> int:
+    song_ids = rated_song_ids_from_database(database_path, username, rating=5, only_unstarred=True)
+    if not song_ids:
+        typer.echo(f"Rated-5 favorites already current for {username}")
+        return 0
+    client = _navidrome_client(settings)
+    for song_id in song_ids:
+        client.star(song_id)
+    typer.echo(f"Favorited {len(song_ids)} rated-5 tracks for {username}")
+    return len(song_ids)
 
 
 REMOTE_SQLITE_BACKUP_SCRIPT = r"""

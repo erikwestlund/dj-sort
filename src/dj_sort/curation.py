@@ -274,13 +274,15 @@ def _read_navidrome_database(
     connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
+        missing_filter = "AND media_file.missing = 0" if "missing" in _table_columns(connection, "media_file") else ""
         media_rows = connection.execute(
-            """
+            f"""
             SELECT media_file.id, media_file.path, annotation.rating, annotation.starred
             FROM media_file
             LEFT JOIN annotation ON annotation.item_id = media_file.id AND annotation.item_type = 'media_file'
             LEFT JOIN user ON user.id = annotation.user_id
-            WHERE annotation.user_id IS NULL OR user.user_name = ?
+            WHERE (annotation.user_id IS NULL OR user.user_name = ?)
+              {missing_filter}
             ORDER BY media_file.path
             """,
             (username,),

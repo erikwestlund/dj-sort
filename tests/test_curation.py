@@ -118,6 +118,25 @@ def test_sync_treats_database_rating_zero_as_unrated(tmp_path: Path) -> None:
     assert result.tracks == []
 
 
+def test_sync_ignores_navidrome_rows_marked_missing(tmp_path: Path) -> None:
+    library = tmp_path / "Library"
+    track = library / "House" / "Artist - Track.mp3"
+    track.parent.mkdir(parents=True)
+    track.write_bytes(b"audio")
+    navidrome_db = tmp_path / "navidrome.db"
+    _write_navidrome_db(navidrome_db, [("song-1", "House/Artist - Track.mp3")], include_missing_column=True)
+    _add_annotation(navidrome_db, "song-1", rating=5, starred=1)
+    connection = sqlite3.connect(navidrome_db)
+    with connection:
+        connection.execute("UPDATE media_file SET missing = 1 WHERE id = 'song-1'")
+    connection.close()
+
+    result = sync_navidrome_curation(_settings(tmp_path, library), navidrome_db, "erik", write=False)
+
+    assert result.tracks == []
+    assert result.missing == []
+
+
 def test_sync_is_idempotent(tmp_path: Path) -> None:
     library = tmp_path / "Library"
     track = library / "House" / "Artist - Track.mp3"
@@ -187,13 +206,14 @@ def _settings(tmp_path: Path, library: Path) -> Settings:
     )
 
 
-def _write_navidrome_db(path: Path, media: list[tuple[str, str]]) -> None:
+def _write_navidrome_db(path: Path, media: list[tuple[str, str]], include_missing_column: bool = False) -> None:
     connection = sqlite3.connect(path)
+    missing_column = ", missing INTEGER DEFAULT 0 NOT NULL" if include_missing_column else ""
     with connection:
         connection.executescript(
-            """
+            f"""
             CREATE TABLE user (id TEXT PRIMARY KEY, user_name TEXT NOT NULL);
-            CREATE TABLE media_file (id TEXT PRIMARY KEY, path TEXT NOT NULL);
+            CREATE TABLE media_file (id TEXT PRIMARY KEY, path TEXT NOT NULL{missing_column});
             CREATE TABLE annotation (
               ann_id TEXT PRIMARY KEY,
               user_id TEXT NOT NULL,
