@@ -31,13 +31,19 @@ class GenreConsolidationSettings(BaseModel):
 
 class NavidromeSettings(BaseModel):
     host: str = "dj.lan"
+    url: str | None = None
+    username: str | None = None
+    password: str | None = None
+    database_path: Path | None = None
+    database_ssh: str | None = None
+    database_ssh_identity_file: Path | None = None
     library_root: Path = Path("/music")
     playlist_root: Path = Path("/srv/dj-library/Library/_Playlists")
     output_dir: Path | None = None
     include_extm3u_header: bool = True
     playlist_name_prefix: str = "Uncurated: "
 
-    @field_validator("library_root", "playlist_root", "output_dir", mode="before")
+    @field_validator("database_path", "database_ssh_identity_file", "library_root", "playlist_root", "output_dir", mode="before")
     @classmethod
     def expand_paths(cls, value: str | Path | None) -> Path | None:
         return Path(value).expanduser() if value is not None else None
@@ -48,6 +54,7 @@ class Settings(BaseModel):
     dj_library_dir: Path = Field(default=Path("~/Music/DJ Library"), validate_default=True)
     uncategorizable_dir: Path = Field(default=Path("~/Music/DJ Uncategorizable"), validate_default=True)
     duplicates_dir: Path = Field(default=Path("~/Music/DJ Duplicates"), validate_default=True)
+    automated_backup_dir: Path | None = Path("./Automated Backup")
     database_path: Path = Path("./db/library.sqlite3")
     genre_map_path: Path = Path("./genres.yaml")
     binary_paths: BinaryPaths = Field(default_factory=BinaryPaths)
@@ -83,13 +90,14 @@ class Settings(BaseModel):
         "dj_library_dir",
         "uncategorizable_dir",
         "duplicates_dir",
+        "automated_backup_dir",
         "database_path",
         "genre_map_path",
         mode="before",
     )
     @classmethod
-    def expand_paths(cls, value: str | Path) -> Path:
-        return Path(value).expanduser()
+    def expand_paths(cls, value: str | Path | None) -> Path | None:
+        return Path(value).expanduser() if value is not None else None
 
 
 class ResolvedBinaries(BaseModel):

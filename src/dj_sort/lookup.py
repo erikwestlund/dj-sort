@@ -12,7 +12,6 @@ from urllib.request import Request, urlopen
 from dj_sort.genres import GenreMap
 from dj_sort.paths import normalize_key, normalize_text
 
-
 USER_AGENT = "dj-sort/0.1 (+https://local)"
 LOCAL_ENV_PATH = Path(".env")
 

@@ -7,7 +7,7 @@ from typing import Any
 
 from mutagen import File
 from mutagen.aiff import AIFF
-from mutagen.id3 import COMM, ID3, ID3NoHeaderError, TCON
+from mutagen.id3 import COMM, ID3, TCON, ID3NoHeaderError
 from mutagen.mp4 import MP4FreeForm
 from mutagen.wave import WAVE
 

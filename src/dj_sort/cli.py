@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import shlex
+import shutil
+import subprocess
+import tempfile
+import time
 from collections import defaultdict
 from pathlib import Path
 from time import perf_counter
@@ -10,16 +16,26 @@ from typing import Annotated
 import typer
 import yaml
 
+from dj_sort import database
 from dj_sort.consolidation import consolidate_genres
-from dj_sort.database import connect, duplicate_report, excluded_report, initialize
+from dj_sort.curation import CurationSyncResult, sync_navidrome_curation, sync_navidrome_curation_from_api
+from dj_sort.database import connect, duplicate_report, excluded_report, genre_id, initialize
 from dj_sort.genres import GenreMap
 from dj_sort.hashing import sha256_file
 from dj_sort.lookup import discogs_token_available, suggest_genre_for_track
 from dj_sort.metadata import read_metadata, write_genre
 from dj_sort.mixedinkey import MixedInKeyUpdate, apply_mixed_in_key_update
-from dj_sort.paths import normalize_key
-from dj_sort.playlists import export_genre_playlists
+from dj_sort.navidrome import (
+    NavidromeClient,
+    filter_playlists,
+    playlist_cache_path,
+    rated_song_ids_from_database,
+    read_playlist_cache,
+    write_playlist_cache,
+)
+from dj_sort.paths import normalize_key, safe_path_part
 from dj_sort.planning import PlanningResult, build_plan_for_file, build_plans, scan_audio_files
+from dj_sort.playlists import export_genre_playlists
 from dj_sort.processing import process_plans
 from dj_sort.reports import add_report_metadata, append_elapsed, discover_genres, render_genre_discovery, render_planning_result, write_or_print
 from dj_sort.settings import Settings, load_settings, resolve_binaries
@@ -49,6 +65,7 @@ def diagnostics(settings_path: SettingsPath = Path("settings.yaml")) -> None:
     typer.echo(f"dj_library_dir: {settings.dj_library_dir}")
     typer.echo(f"uncategorizable_dir: {settings.uncategorizable_dir}")
     typer.echo(f"duplicates_dir: {settings.duplicates_dir}")
+    typer.echo(f"automated_backup_dir: {settings.automated_backup_dir or '<disabled>'}")
     typer.echo(f"database_path: {settings.database_path}")
     typer.echo(f"genre_map_path: {settings.genre_map_path}")
     typer.echo(f"ffmpeg: {binaries.ffmpeg or '<not found>'}")
@@ -291,6 +308,303 @@ def export_navidrome_playlists(
         typer.echo(f"- {export.path}: {export.track_count} tracks")
 
 
+@app.command("sync-navidrome-curation")
+def sync_navidrome_curation_command(
+    settings_path: SettingsPath = Path("settings.yaml"),
+    database_path: Annotated[
+        Path | None,
+        typer.Option("--database-path", help="Path to navidrome.db; defaults to navidrome.database_path or NAVIDROME_DB"),
+    ] = None,
+    database_ssh: Annotated[
+        str | None,
+        typer.Option("--database-ssh", help="SSH SQLite source, for example erik@192.168.1.31:/srv/navidrome/navidrome.db"),
+    ] = None,
+    ssh_identity_file: Annotated[
+        Path | None,
+        typer.Option("--ssh-identity-file", help="Identity file to use for --database-ssh"),
+    ] = None,
+    source: Annotated[str, typer.Option("--source", help="Curation source: auto, db, ssh, or api")] = "auto",
+    library_dir: Annotated[Path | None, typer.Option("--library-dir", help="Local DJ library root; defaults to dj_library_dir")] = None,
+    output_dir: Annotated[Path | None, typer.Option("--output-dir", help="Directory for exported .m3u8 playlists")] = None,
+    write: Annotated[bool, typer.Option("--write", help="Write MP3 curation tags and .m3u8 playlists")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show per-file curation details")] = False,
+    rescan: Annotated[bool, typer.Option("--rescan/--no-rescan", help="Rescan Navidrome before --write and wait for completion")] = True,
+    rescan_timeout_seconds: Annotated[int, typer.Option("--rescan-timeout-seconds", help="Maximum seconds to wait for pre-write rescan")] = 900,
+    rescan_poll_seconds: Annotated[int, typer.Option("--rescan-poll-seconds", help="Seconds between pre-write scan status checks")] = 5,
+) -> None:
+    """Sync Navidrome ratings, favorites, and real playlists into recoverable tags and .m3u8 exports."""
+    settings = _load(settings_path)
+    try:
+        if write and rescan:
+            _trigger_navidrome_rescan(
+                settings,
+                wait=True,
+                timeout_seconds=rescan_timeout_seconds,
+                poll_seconds=rescan_poll_seconds,
+            )
+        result = _sync_navidrome_curation_from_source(
+            settings=settings,
+            source=source,
+            database_path=database_path,
+            database_ssh=database_ssh,
+            ssh_identity_file=ssh_identity_file,
+            library_dir=library_dir,
+            output_dir=output_dir,
+            write=write,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise DB/filesystem errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _render_curation_sync_result(result, verbose=verbose)
+
+
+@app.command("rescan-navidrome")
+def rescan_navidrome(
+    settings_path: SettingsPath = Path("settings.yaml"),
+    wait: Annotated[bool, typer.Option("--wait", help="Wait for Navidrome to finish scanning")] = False,
+    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds", help="Maximum seconds to wait for --wait")] = 900,
+    poll_seconds: Annotated[int, typer.Option("--poll-seconds", help="Seconds between scan status checks")] = 5,
+) -> None:
+    """Trigger a Navidrome library rescan through the Subsonic API."""
+    settings = _load(settings_path)
+    try:
+        _trigger_navidrome_rescan(settings, wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise API errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("prune-automated-backups")
+def prune_automated_backups(
+    settings_path: SettingsPath = Path("settings.yaml"),
+    days: Annotated[int, typer.Option("--days", help="Delete backup entries older than this many days")] = 30,
+    write: Annotated[bool, typer.Option("--write", help="Delete matching backup entries; otherwise show a dry-run")] = False,
+) -> None:
+    """Prune old entries from automated_backup_dir."""
+    if days < 0:
+        typer.echo("Error: --days must be 0 or greater", err=True)
+        raise typer.Exit(code=1)
+    settings = _load(settings_path)
+    try:
+        entries = _old_automated_backup_entries(settings, days)
+        if write:
+            for entry in entries:
+                if entry.is_dir():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise filesystem errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    action = "Pruned" if write else "Would prune"
+    backup_dir = settings.automated_backup_dir or "<disabled>"
+    typer.echo(f"{action} {len(entries)} automated backup entries older than {days} days from {backup_dir}")
+    for entry in entries:
+        typer.echo(f"- {entry}")
+
+
+@app.command("rate-current")
+def rate_current(
+    rating: Annotated[int, typer.Argument(help="Navidrome rating from 1 to 5")],
+    settings_path: SettingsPath = Path("settings.yaml"),
+    favorite_five: Annotated[bool, typer.Option("--favorite-five/--no-favorite-five", help="Favorite/star the track when rating is 5")] = True,
+) -> None:
+    """Rate the current Navidrome now-playing track."""
+    if rating < 1 or rating > 5:
+        typer.echo("Error: rating must be between 1 and 5", err=True)
+        raise typer.Exit(code=1)
+    settings = _load(settings_path)
+    try:
+        client = _navidrome_client(settings)
+        song = client.now_playing()
+        client.set_rating(song.id, rating)
+        favorited = rating == 5 and favorite_five
+        if favorited:
+            client.star(song.id)
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise API errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    suffix = " and favorited" if favorited else ""
+    typer.echo(f"Rated {rating}{suffix}: {song.display_name}")
+
+
+@app.command("favorite-rated-five")
+def favorite_rated_five(
+    settings_path: SettingsPath = Path("settings.yaml"),
+    database_path: Annotated[
+        Path | None,
+        typer.Option("--database-path", help="Path to navidrome.db; defaults to navidrome.database_path or NAVIDROME_DB"),
+    ] = None,
+    include_already_starred: Annotated[
+        bool,
+        typer.Option("--include-already-starred/--only-unstarred", help="Also call star for tracks already marked starred in the DB"),
+    ] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show how many tracks would be favorited without writing")] = False,
+) -> None:
+    """Favorite/star every current user's Navidrome track rated 5."""
+    settings = _load(settings_path)
+    try:
+        username = _navidrome_username(settings)
+        db_path = _navidrome_database_path(settings, database_path)
+        song_ids = rated_song_ids_from_database(db_path, username, rating=5, only_unstarred=not include_already_starred)
+        if dry_run:
+            typer.echo(f"Would favorite {len(song_ids)} rated-5 tracks for {username}")
+            return
+        client = _navidrome_client(settings)
+        for song_id in song_ids:
+            client.star(song_id)
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise API/DB errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Favorited {len(song_ids)} rated-5 tracks for {username}")
+
+
+@app.command("new-playlist")
+def new_playlist(
+    name: Annotated[str, typer.Argument(help="Playlist name to create in Navidrome")],
+    settings_path: SettingsPath = Path("settings.yaml"),
+) -> None:
+    """Create a Navidrome playlist."""
+    cleaned = name.strip()
+    if not cleaned:
+        typer.echo("Error: playlist name cannot be blank", err=True)
+        raise typer.Exit(code=1)
+    settings = _load(settings_path)
+    try:
+        playlist = _navidrome_client(settings).create_playlist(cleaned)
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise API errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Created playlist {playlist.id}: {playlist.name}")
+
+
+@app.command("list-playlist")
+@app.command("list-playlists")
+def list_playlists(
+    target: Annotated[str | None, typer.Argument(help="Playlist fuzzy query, or a number from the previous list")] = None,
+    settings_path: SettingsPath = Path("settings.yaml"),
+    max_results: Annotated[int, typer.Option("--max-results", help="Maximum playlists or songs to show")] = 50,
+) -> None:
+    """List non-generated Navidrome playlists, or show one playlist's songs by number."""
+    settings = _load(settings_path)
+    cache_path = playlist_cache_path(settings_path)
+    try:
+        client = _navidrome_client(settings)
+        if target is not None and target.strip().isdigit():
+            playlist = _playlist_from_cached_number(cache_path, int(target.strip()))
+            songs = client.playlist_songs(playlist.id)
+            typer.echo(f"{playlist.name}: {len(songs)} tracks")
+            for index, song in enumerate(songs[:max_results], start=1):
+                album = f" [{song.album}]" if song.album else ""
+                typer.echo(f"{index}. {song.display_name}{album}")
+            if len(songs) > max_results:
+                typer.echo(f"... {len(songs) - max_results} more")
+            return
+
+        matches = filter_playlists(client.playlists(), target, _navidrome_excluded_playlist_prefixes(settings))
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise API errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    shown = matches[:max_results]
+    write_playlist_cache(cache_path, shown)
+    typer.echo(f"Playlists: {len(matches)}")
+    for index, playlist in enumerate(shown, start=1):
+        count = f" ({playlist.song_count} tracks)" if playlist.song_count is not None else ""
+        typer.echo(f"{index}. {playlist.name}{count}")
+    if shown:
+        typer.echo(f"Run again with a number, for example: dj-sort list-playlists 1 --settings {settings_path}")
+
+
+@app.command("categorize-current")
+def categorize_current(
+    target: Annotated[str | None, typer.Argument(help="Playlist fuzzy query, or a number from the previous result list")] = None,
+    settings_path: SettingsPath = Path("settings.yaml"),
+    max_results: Annotated[int, typer.Option("--max-results", help="Maximum playlist choices to show")] = 25,
+) -> None:
+    """Add the current Navidrome now-playing track to a non-generated playlist."""
+    settings = _load(settings_path)
+    cache_path = playlist_cache_path(settings_path)
+    try:
+        client = _navidrome_client(settings)
+        song = client.now_playing()
+        if target is not None and target.strip().isdigit():
+            playlist = _playlist_from_cached_number(cache_path, int(target.strip()))
+            added = client.add_to_playlist(playlist.id, song.id)
+            action = "Added" if added else "Already in"
+            typer.echo(f"{action} playlist '{playlist.name}': {song.display_name}")
+            return
+
+        matches = filter_playlists(client.playlists(), target, _navidrome_excluded_playlist_prefixes(settings))
+        if target and len(matches) == 1 and matches[0].name.casefold() == target.strip().casefold():
+            added = client.add_to_playlist(matches[0].id, song.id)
+            action = "Added" if added else "Already in"
+            typer.echo(f"{action} playlist '{matches[0].name}': {song.display_name}")
+            return
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise API errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    shown = matches[:max_results]
+    write_playlist_cache(cache_path, shown)
+    typer.echo(f"Current track: {song.display_name}")
+    typer.echo(f"Playlist matches: {len(matches)}")
+    for index, playlist in enumerate(shown, start=1):
+        count = f" ({playlist.song_count} tracks)" if playlist.song_count is not None else ""
+        typer.echo(f"{index}. {playlist.name}{count}")
+    if shown:
+        typer.echo(f"Run again with a number, for example: dj-sort categorize-current 1 --settings {settings_path}")
+
+
+@app.command("re-genre-current")
+def re_genre_current(
+    target_genre: Annotated[str, typer.Argument(help="New genre for the current Navidrome now-playing track")],
+    settings_path: SettingsPath = Path("settings.yaml"),
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the tag/path change without writing")] = False,
+) -> None:
+    """Retag and move the current Navidrome now-playing track into a genre folder."""
+    settings = _load(settings_path)
+    try:
+        genre = _resolve_target_genre(settings, target_genre)
+        client = _navidrome_client(settings)
+        song = client.now_playing()
+        current_path = _local_path_for_navidrome_song(settings, song.path)
+        metadata = read_metadata(current_path)
+        target_path = settings.dj_library_dir / safe_path_part(genre) / current_path.name
+        if target_path.exists() and target_path != current_path:
+            raise ValueError(f"target file already exists, not overwriting: {target_path}")
+        if dry_run:
+            typer.echo(f"Would re-genre: {song.display_name}")
+            typer.echo(f"Genre: {metadata.genre or '<missing>'} -> {genre}")
+            typer.echo(f"Path: {current_path} -> {target_path}")
+            return
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        original_genre = metadata.genre if settings.preserve_original_genre_in_comment else None
+        write_genre(
+            current_path,
+            genre,
+            original_genre=original_genre,
+            original_genre_comment_prefix=settings.original_genre_comment_prefix,
+        )
+        if current_path != target_path:
+            old_parent = current_path.parent
+            current_path.rename(target_path)
+            if settings.remove_empty_genre_dirs:
+                _remove_empty_parents(old_parent, settings.dj_library_dir)
+        _update_re_genred_song_database(settings, current_path, target_path, metadata.genre, genre)
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise API/filesystem errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"Re-genred: {song.display_name}")
+    typer.echo(f"Genre: {metadata.genre or '<missing>'} -> {genre}")
+    typer.echo(f"Path: {current_path} -> {target_path}")
+    typer.echo("Regenerate Navidrome playlists and rescan Navidrome to refresh generated Uncurated playlists.")
+
+
 @app.command("export-uncategorizable")
 def export_uncategorizable(
     path: Annotated[Path, typer.Argument(help="Path to export, relative to the selected base directory unless absolute")] = Path("."),
@@ -373,7 +687,10 @@ def suggest_genres(
     review_output: Annotated[Path | None, typer.Option("--review-output", help="Write rows without clear suggestions to this CSV")] = None,
     limit: Annotated[int | None, typer.Option("--limit", help="Limit lookup rows for testing/rate limits")] = None,
     fill_empty: Annotated[bool, typer.Option("--fill-empty", help="Copy lookup suggestions into empty update_genre cells")] = False,
-    fill_clear: Annotated[bool, typer.Option("--fill-clear", help="Copy clear lookup suggestions into update_genre and leave unclear rows blank")] = False,
+    fill_clear: Annotated[
+        bool,
+        typer.Option("--fill-clear", help="Copy clear lookup suggestions into update_genre and leave unclear rows blank"),
+    ] = False,
     musicbrainz: Annotated[bool, typer.Option("--musicbrainz/--no-musicbrainz", help="Fall back to MusicBrainz for Discogs misses")] = True,
 ) -> None:
     """Suggest genres for review CSV rows using Discogs, falling back to MusicBrainz."""
@@ -658,6 +975,290 @@ def _clean_force_genre(force_genre: str | None) -> str | None:
         return cleaned
     typer.echo("Error: --force-genre cannot be blank", err=True)
     raise typer.Exit(code=1)
+
+
+def _old_automated_backup_entries(settings: Settings, days: int) -> list[Path]:
+    backup_dir = settings.automated_backup_dir
+    if backup_dir is None or not backup_dir.exists():
+        return []
+    if not backup_dir.is_dir():
+        raise ValueError(f"automated_backup_dir is not a directory: {backup_dir}")
+    cutoff = time.time() - (days * 24 * 60 * 60)
+    return sorted((entry for entry in backup_dir.iterdir() if entry.stat().st_mtime < cutoff), key=lambda path: path.name.casefold())
+
+
+def _trigger_navidrome_rescan(settings: Settings, wait: bool = False, timeout_seconds: int = 900, poll_seconds: int = 5) -> None:
+    if timeout_seconds < 1:
+        raise ValueError("--timeout-seconds must be at least 1")
+    if poll_seconds < 1:
+        raise ValueError("--poll-seconds must be at least 1")
+    client = _navidrome_client(settings)
+    status = client.start_scan()
+    count = f", count={status.count}" if status.count is not None else ""
+    typer.echo(f"Started Navidrome rescan: scanning={status.scanning}{count}")
+    if not wait:
+        typer.echo("Rescan is asynchronous; use rescan-navidrome --wait to wait for completion.")
+        return
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        status = client.scan_status()
+        count = f", count={status.count}" if status.count is not None else ""
+        typer.echo(f"Navidrome scan status: scanning={status.scanning}{count}")
+        if not status.scanning:
+            typer.echo("Navidrome rescan finished")
+            return
+        time.sleep(poll_seconds)
+    raise TimeoutError(f"Navidrome rescan did not finish within {timeout_seconds} seconds")
+
+
+def _navidrome_client(settings: Settings) -> NavidromeClient:
+    username = _navidrome_username(settings)
+    password = settings.navidrome.password or os.environ.get("NAVIDROME_PASSWORD")
+    if not username or not password:
+        raise ValueError("Navidrome credentials are required: set navidrome.username/password or NAVIDROME_USER/NAVIDROME_PASSWORD")
+    return NavidromeClient(
+        _navidrome_base_url(settings),
+        username,
+        password,
+    )
+
+
+def _navidrome_username(settings: Settings) -> str:
+    username = settings.navidrome.username or os.environ.get("NAVIDROME_USER") or os.environ.get("NAVIDROME_USERNAME")
+    if not username:
+        raise ValueError("Navidrome username is required: set navidrome.username or NAVIDROME_USER")
+    return username
+
+
+def _navidrome_database_path(settings: Settings, database_path: Path | None = None) -> Path:
+    configured = database_path or settings.navidrome.database_path
+    env_path = os.environ.get("NAVIDROME_DB")
+    if configured is None and env_path:
+        configured = Path(env_path)
+    if configured is None:
+        raise ValueError("Navidrome database path is required: set navidrome.database_path, NAVIDROME_DB, or --database-path")
+    return configured.expanduser()
+
+
+def _navidrome_database_ssh(settings: Settings, database_ssh: str | None = None) -> str | None:
+    return database_ssh or settings.navidrome.database_ssh or os.environ.get("NAVIDROME_DB_SSH")
+
+
+def _navidrome_database_ssh_identity_file(settings: Settings, identity_file: Path | None = None) -> Path | None:
+    configured = identity_file or settings.navidrome.database_ssh_identity_file
+    env_path = os.environ.get("NAVIDROME_DB_SSH_IDENTITY_FILE")
+    if configured is None and env_path:
+        configured = Path(env_path)
+    return configured.expanduser() if configured is not None else None
+
+
+def _sync_navidrome_curation_from_source(
+    settings: Settings,
+    source: str,
+    database_path: Path | None,
+    database_ssh: str | None,
+    ssh_identity_file: Path | None,
+    library_dir: Path | None,
+    output_dir: Path | None,
+    write: bool,
+) -> CurationSyncResult:
+    normalized_source = source.strip().casefold()
+    if normalized_source not in {"auto", "db", "ssh", "api"}:
+        raise ValueError("--source must be one of: auto, db, ssh, api")
+    username = _navidrome_username(settings)
+
+    if normalized_source in {"auto", "db"}:
+        try:
+            resolved_database_path = _navidrome_database_path(settings, database_path)
+        except ValueError:
+            if normalized_source == "db":
+                raise
+        else:
+            if resolved_database_path.exists():
+                return sync_navidrome_curation(
+                    settings,
+                    resolved_database_path,
+                    username,
+                    library_dir=library_dir,
+                    output_dir=output_dir,
+                    write=write,
+                )
+            if normalized_source == "db":
+                raise FileNotFoundError(f"Navidrome database does not exist: {resolved_database_path}")
+
+    ssh_source = _navidrome_database_ssh(settings, database_ssh)
+    if normalized_source in {"auto", "ssh"} and ssh_source:
+        with tempfile.TemporaryDirectory(prefix="dj-sort-navidrome-") as temp_dir:
+            snapshot_path = Path(temp_dir) / "navidrome.db"
+            _copy_navidrome_database_over_ssh(ssh_source, snapshot_path, _navidrome_database_ssh_identity_file(settings, ssh_identity_file))
+            result = sync_navidrome_curation(
+                settings,
+                snapshot_path,
+                username,
+                library_dir=library_dir,
+                output_dir=output_dir,
+                write=write,
+                source_name="ssh",
+            )
+            return result
+    if normalized_source == "ssh":
+        raise ValueError("Navidrome SSH database source is required: set navidrome.database_ssh, NAVIDROME_DB_SSH, or --database-ssh")
+
+    if normalized_source == "api" or _navidrome_api_credentials_available(settings):
+        return sync_navidrome_curation_from_api(
+            settings,
+            _navidrome_client(settings),
+            library_dir=library_dir,
+            output_dir=output_dir,
+            write=write,
+        )
+    raise ValueError(
+        "No Navidrome curation source available: configure navidrome.database_path, navidrome.database_ssh, "
+        "or Navidrome API credentials"
+    )
+
+
+def _navidrome_api_credentials_available(settings: Settings) -> bool:
+    username = settings.navidrome.username or os.environ.get("NAVIDROME_USER") or os.environ.get("NAVIDROME_USERNAME")
+    password = settings.navidrome.password or os.environ.get("NAVIDROME_PASSWORD")
+    return bool(username and password)
+
+
+REMOTE_SQLITE_BACKUP_SCRIPT = r"""
+import os
+import sqlite3
+import sys
+import tempfile
+
+source = sys.argv[1]
+fd, target = tempfile.mkstemp(prefix="navidrome-backup-", suffix=".db")
+os.close(fd)
+try:
+    source_connection = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+    target_connection = sqlite3.connect(target)
+    source_connection.backup(target_connection)
+    target_connection.close()
+    source_connection.close()
+    with open(target, "rb") as handle:
+        sys.stdout.buffer.write(handle.read())
+finally:
+    try:
+        os.unlink(target)
+    except FileNotFoundError:
+        pass
+""".strip()
+
+
+def _copy_navidrome_database_over_ssh(source: str, target: Path, identity_file: Path | None = None) -> None:
+    host, remote_path = _split_ssh_database_source(source)
+    command = ["ssh"]
+    if identity_file is not None:
+        command.extend(["-i", str(identity_file), "-o", "IdentitiesOnly=yes"])
+    remote_command = f"python3 -c {shlex.quote(REMOTE_SQLITE_BACKUP_SCRIPT)} {shlex.quote(remote_path)}"
+    command.extend([host, remote_command])
+    with target.open("wb") as output:
+        completed = subprocess.run(  # noqa: S603 - host/path are user-provided command options
+            command,
+            stdout=output,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    if completed.returncode != 0:
+        target.unlink(missing_ok=True)
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"Navidrome SSH database backup failed: {stderr or f'ssh exited {completed.returncode}'}")
+
+
+def _split_ssh_database_source(source: str) -> tuple[str, str]:
+    host, separator, path = source.partition(":")
+    if not separator or not host or not path:
+        raise ValueError("SSH database source must look like user@host:/path/to/navidrome.db")
+    return host, path
+
+
+def _navidrome_base_url(settings: Settings) -> str:
+    configured = settings.navidrome.url or os.environ.get("NAVIDROME_URL")
+    if configured:
+        return configured.rstrip("/")
+    host = settings.navidrome.host.rstrip("/")
+    if host.startswith("http://") or host.startswith("https://"):
+        return host
+    return f"http://{host}:4533"
+
+
+def _navidrome_excluded_playlist_prefixes(settings: Settings) -> tuple[str, ...]:
+    prefixes = ["Uncurated:"]
+    configured = settings.navidrome.playlist_name_prefix.strip()
+    if configured:
+        prefixes.append(configured)
+    return tuple(dict.fromkeys(prefixes))
+
+
+def _playlist_from_cached_number(cache_path: Path, number: int):
+    playlists = read_playlist_cache(cache_path)
+    if number < 1 or number > len(playlists):
+        raise ValueError(f"Playlist number {number} is out of range for cached results at {cache_path}")
+    return playlists[number - 1]
+
+
+def _resolve_target_genre(settings: Settings, target_genre: str) -> str:
+    cleaned = target_genre.strip()
+    if not cleaned:
+        raise ValueError("target genre cannot be blank")
+    genre_map = GenreMap.load(settings.genre_map_path)
+    resolved = genre_map.resolve(cleaned, settings.missing_genre_dir)
+    return resolved.canonical_genre if resolved.canonical_genre and not resolved.missing else cleaned
+
+
+def _local_path_for_navidrome_song(settings: Settings, navidrome_path: str | None) -> Path:
+    if not navidrome_path:
+        raise ValueError("current Navidrome track did not include a path")
+    raw_path = Path(navidrome_path)
+    server_root = settings.navidrome.library_root
+    if raw_path.is_absolute():
+        try:
+            relative_path = raw_path.relative_to(server_root)
+        except ValueError as exc:
+            raise ValueError(f"current Navidrome track is outside configured library_root: {navidrome_path}") from exc
+    else:
+        relative_path = raw_path
+    local_path = settings.dj_library_dir / relative_path
+    if not local_path.exists():
+        raise FileNotFoundError(f"current track file does not exist locally: {local_path}")
+    if not local_path.is_file():
+        raise ValueError(f"current track path is not a file: {local_path}")
+    return local_path
+
+
+def _update_re_genred_song_database(
+    settings: Settings,
+    previous_path: Path,
+    new_path: Path,
+    previous_genre: str | None,
+    new_genre: str,
+) -> None:
+    connection = connect(settings.database_path)
+    initialize(connection)
+    try:
+        row = connection.execute("SELECT id FROM song WHERE current_path = ?", (str(previous_path),)).fetchone()
+        if row is None and previous_path != new_path:
+            row = connection.execute("SELECT id FROM song WHERE current_path = ?", (str(new_path),)).fetchone()
+        if row is None:
+            return
+        database_genre_id = genre_id(connection, new_genre)
+        database.update_consolidated_song(
+            connection,
+            song_id=int(row["id"]),
+            genre_id=database_genre_id,
+            display_genre=new_genre,
+            new_path=new_path,
+            new_hash=sha256_file(new_path),
+            previous_path=previous_path,
+            previous_genre=previous_genre,
+        )
+    finally:
+        connection.close()
 
 
 def _render_structured_or_text(
@@ -1175,6 +1776,71 @@ def _render_process_text(result) -> str:
             cleanup = f" source={item.source_cleanup_status}:{item.source_archive_path}"
         lines.append(f"- {item.status}: {item.source_path} -> {item.target_path}{cleanup}{suffix}")
     return "\n".join(lines)
+
+
+def _render_curation_sync_result(result: CurationSyncResult, verbose: bool = False) -> None:
+    action = "Would sync" if result.dry_run else "Synced"
+    typer.echo(f"{action} Navidrome curation (source: {result.source})")
+    if result.api_partial:
+        typer.echo("API source is partial: it syncs starred tracks and playlist members, not every rated track.")
+    if result.backup_path is not None:
+        typer.echo(f"Backup: {result.backup_path}")
+    if verbose:
+        changed = [plan for plan in result.tracks if plan.status == "changed"]
+        unsupported = [plan for plan in result.tracks if plan.status == "unsupported"]
+        errors = [plan for plan in result.tracks if plan.status == "error"]
+        if changed:
+            typer.echo("Tag updates: Navidrome curation differs from local MP3 curation frames; these are the planned frame changes.")
+            for plan in changed:
+                typer.echo(f"- {plan.track.local_path}")
+                for change in plan.changes:
+                    typer.echo(f"  {change}")
+        if unsupported:
+            typer.echo("Unsupported metadata writes: these files stay in playlist exports, but tag writes are MP3-only.")
+            for plan in unsupported:
+                typer.echo(f"- unsupported: {plan.track.local_path}: {plan.notes}")
+        if errors:
+            typer.echo("Errors: these files could not be inspected or written and need manual review.")
+            for plan in errors:
+                typer.echo(f"- error: {plan.track.local_path}: {plan.notes}")
+        if result.playlist_exports:
+            typer.echo("Playlist exports: write means the .m3u8 content differs from the current exported file or does not exist yet.")
+            for playlist in result.playlist_exports:
+                status = "write" if playlist.changed else "unchanged"
+                typer.echo(f"- playlist {status}: {playlist.path} ({len(playlist.tracks)} tracks)")
+        if result.missing:
+            typer.echo(
+                "Missing/stale paths: Navidrome points at paths that do not currently resolve locally; "
+                "no tag or playlist write is made for these paths."
+            )
+            for navidrome_path, local_path in result.missing:
+                typer.echo(f"- missing/stale: {navidrome_path} -> {local_path}")
+                typer.echo(f"  Meaning: {_curation_missing_path_explanation(navidrome_path, local_path)}")
+    elif result.unsupported_files or result.error_files or result.missing:
+        typer.echo("Use --verbose to show skipped files and errors.")
+    typer.echo(
+        "Summary: "
+        f"files changed={result.changed_files}, "
+        f"playlists written={result.playlists_written}, "
+        f"skipped missing={len(result.missing)}, "
+        f"skipped unsupported={result.unsupported_files}, "
+        f"errors={result.error_files}, "
+        f"unchanged={result.unchanged_files}"
+    )
+
+
+def _curation_missing_path_explanation(navidrome_path: str, local_path: str) -> str:
+    if ".sync-conflict-" in Path(navidrome_path).name:
+        return (
+            "this is a Syncthing conflict-copy filename recorded in Navidrome, but that conflict file is not present locally. "
+            "It is usually safe to ignore for curation sync; rescan Navidrome or remove the stale conflict file there if it keeps appearing."
+        )
+    if ".sync-conflict-" in Path(local_path).name:
+        return (
+            "Navidrome points at a Syncthing conflict-copy filename that is missing locally. "
+            "Compare it with the normal track filename before deleting anything; curation sync skipped it."
+        )
+    return "the path from Navidrome did not match an existing local file, so curation sync skipped it."
 
 
 def _render_duplicate_text(report: dict[str, object]) -> str:

@@ -2,6 +2,9 @@ unprocessed_music_dir: /Music/DJ Unprocessed
 dj_library_dir: /Music/DJ Library
 uncategorizable_dir: /Music/DJ Uncategorizable
 duplicates_dir: /Music/DJ Duplicates
+# Automated backups are written before destructive commands such as curation sync --write.
+# Set to null to disable, but keeping this on is strongly recommended.
+automated_backup_dir: /Music/DJ Automated Backup
 database_path: ./db/library.sqlite3
 genre_map_path: ./genres.yaml
 binary_paths:
@@ -35,6 +38,18 @@ blacklist_substrings: []
 remove_empty_genre_dirs: false
 navidrome:
   host: dj.lan
+  # Optional API URL and credentials for commands like rate-current and categorize-current.
+  # You can also use NAVIDROME_URL, NAVIDROME_USER/NAVIDROME_USERNAME, and NAVIDROME_PASSWORD.
+  url: http://dj.lan:4533
+  username: null
+  password: null
+  # Optional direct SQLite DB path for bulk curation commands. You can also use NAVIDROME_DB.
+  database_path: /srv/navidrome/navidrome.db
+  # Optional SSH source for a read-only SQLite backup, useful when running locally.
+  # You can also use NAVIDROME_DB_SSH. Format: user@host:/path/to/navidrome.db
+  database_ssh: erik@192.168.1.31:/srv/navidrome/navidrome.db
+  # Optional identity file for database_ssh. You can also use NAVIDROME_DB_SSH_IDENTITY_FILE.
+  database_ssh_identity_file: ~/.ssh/erik
   # Path used inside the Navidrome container. This is normally the container's MusicFolder.
   library_root: /music
   # Host path where generated .m3u files should be written. With Navidrome, this folder
