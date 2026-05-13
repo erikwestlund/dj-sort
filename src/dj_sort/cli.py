@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -570,7 +571,7 @@ def re_genre_current(
         genre = _resolve_target_genre(settings, target_genre)
         client = _navidrome_client(settings)
         song = client.now_playing()
-        current_path = _local_path_for_navidrome_song(settings, song.path)
+        current_path = _local_path_for_navidrome_song(settings, song.path, song_id=song.id)
         metadata = read_metadata(current_path)
         target_path = settings.dj_library_dir / safe_path_part(genre) / current_path.name
         if target_path.exists() and target_path != current_path:
@@ -1228,9 +1229,28 @@ def _resolve_target_genre(settings: Settings, target_genre: str) -> str:
     return resolved.canonical_genre if resolved.canonical_genre and not resolved.missing else cleaned
 
 
-def _local_path_for_navidrome_song(settings: Settings, navidrome_path: str | None) -> Path:
+def _local_path_for_navidrome_song(settings: Settings, navidrome_path: str | None, song_id: str | None = None) -> Path:
     if not navidrome_path:
         raise ValueError("current Navidrome track did not include a path")
+    local_path = _local_path_from_navidrome_path(settings, navidrome_path)
+    if local_path.exists() and local_path.is_file():
+        return local_path
+    if song_id:
+        db_path = _current_navidrome_database_media_path(settings, song_id)
+        if db_path:
+            db_local_path = _local_path_from_navidrome_path(settings, db_path)
+            if db_local_path.exists() and db_local_path.is_file():
+                return db_local_path
+            raise FileNotFoundError(f"current track DB path does not exist locally: {db_local_path}")
+    if local_path.exists() and not local_path.is_file():
+        raise ValueError(f"current track path is not a file: {local_path}")
+    raise FileNotFoundError(
+        f"current track file does not exist locally: {local_path}. "
+        "Navidrome now-playing may be stale; rescan Navidrome and try again."
+    )
+
+
+def _local_path_from_navidrome_path(settings: Settings, navidrome_path: str) -> Path:
     raw_path = Path(navidrome_path)
     server_root = settings.navidrome.library_root
     if raw_path.is_absolute():
@@ -1240,12 +1260,36 @@ def _local_path_for_navidrome_song(settings: Settings, navidrome_path: str | Non
             raise ValueError(f"current Navidrome track is outside configured library_root: {navidrome_path}") from exc
     else:
         relative_path = raw_path
-    local_path = settings.dj_library_dir / relative_path
-    if not local_path.exists():
-        raise FileNotFoundError(f"current track file does not exist locally: {local_path}")
-    if not local_path.is_file():
-        raise ValueError(f"current track path is not a file: {local_path}")
-    return local_path
+    return settings.dj_library_dir / relative_path
+
+
+def _current_navidrome_database_media_path(settings: Settings, song_id: str) -> str | None:
+    try:
+        database_path = _navidrome_database_path(settings)
+    except ValueError:
+        database_path = None
+    if database_path is not None and database_path.exists():
+        return _navidrome_media_file_path_by_id(database_path, song_id)
+
+    ssh_source = _navidrome_database_ssh(settings)
+    if not ssh_source:
+        return None
+    with tempfile.TemporaryDirectory(prefix="dj-sort-navidrome-current-") as temp_dir:
+        snapshot_path = Path(temp_dir) / "navidrome.db"
+        _copy_navidrome_database_over_ssh(ssh_source, snapshot_path, _navidrome_database_ssh_identity_file(settings))
+        return _navidrome_media_file_path_by_id(snapshot_path, song_id)
+
+
+def _navidrome_media_file_path_by_id(database_path: Path, song_id: str) -> str | None:
+    connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(media_file)")}
+        missing_filter = "AND missing = 0" if "missing" in columns else ""
+        row = connection.execute(f"SELECT path FROM media_file WHERE id = ? {missing_filter} LIMIT 1", (song_id,)).fetchone()
+        return str(row["path"]) if row else None
+    finally:
+        connection.close()
 
 
 def _update_re_genred_song_database(

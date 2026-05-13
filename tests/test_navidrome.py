@@ -166,6 +166,35 @@ def test_re_genre_current_writes_genre_and_moves_file(tmp_path: Path, monkeypatc
     assert "Re-genred: Artist - Track" in result.stdout
 
 
+def test_re_genre_current_falls_back_to_database_path_when_now_playing_path_is_stale(tmp_path: Path, monkeypatch) -> None:
+    navidrome_db = tmp_path / "navidrome.db"
+    settings_path = _write_library_settings(tmp_path, navidrome_database_path=navidrome_db)
+    source = tmp_path / "library" / "Indie Dance" / "Fedde Le Grande - Put Your Hands Up For Detroit - Original Mix.m4a"
+    target = tmp_path / "library" / "Electro House" / source.name
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"audio")
+    _write_navidrome_media_db(navidrome_db, "song-1", "Indie Dance/Fedde Le Grande - Put Your Hands Up For Detroit - Original Mix.m4a")
+    fake = FakeNavidromeClient()
+    fake.now_playing = lambda: NavidromeSong(  # type: ignore[method-assign]
+        id="song-1",
+        artist="Fedde Le Grande",
+        title="Put Your Hands Up For Detroit - Original Mix",
+        path="Fedde Le Grande/Put Your Hands Up For Detroit/Put Your Hands Up For Detroit - Original Mix.m4a",
+    )
+    written = []
+    monkeypatch.setattr("dj_sort.cli._navidrome_client", lambda settings: fake)
+    monkeypatch.setattr("dj_sort.cli.read_metadata", lambda path: _metadata(path, genre="Indie Dance"))
+    monkeypatch.setattr("dj_sort.cli.write_genre", lambda path, genre, **kwargs: written.append((path, genre, kwargs)))
+
+    result = runner.invoke(app, ["re-genre-current", "Electro House", "--settings", str(settings_path)])
+
+    assert result.exit_code == 0
+    assert source.exists() is False
+    assert target.exists()
+    assert written[0][0] == source
+    assert "Path:" in result.stdout
+
+
 def test_favorite_rated_five_stars_unstarred_rating_five_tracks(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "navidrome.db"
     _write_navidrome_db(db_path)
@@ -395,7 +424,7 @@ def _write_settings(tmp_path: Path) -> Path:
     return settings_path
 
 
-def _write_library_settings(tmp_path: Path) -> Path:
+def _write_library_settings(tmp_path: Path, navidrome_database_path: Path | None = None) -> Path:
     genre_map = tmp_path / "genres.yaml"
     genre_map.write_text("genres:\n  Indie Dance: Indie Dance\n", encoding="utf-8")
     settings_path = tmp_path / "settings.yaml"
@@ -408,12 +437,21 @@ def _write_library_settings(tmp_path: Path) -> Path:
                 f"genre_map_path: {genre_map}",
                 "navidrome:",
                 "  library_root: /music",
+                *( [f"  database_path: {navidrome_database_path}"] if navidrome_database_path is not None else [] ),
             ]
         )
         + "\n",
         encoding="utf-8",
     )
     return settings_path
+
+
+def _write_navidrome_media_db(path: Path, song_id: str, media_path: str) -> None:
+    connection = sqlite3.connect(path)
+    with connection:
+        connection.execute("CREATE TABLE media_file (id TEXT PRIMARY KEY, path TEXT NOT NULL, missing INTEGER DEFAULT 0 NOT NULL)")
+        connection.execute("INSERT INTO media_file (id, path, missing) VALUES (?, ?, 0)", (song_id, media_path))
+    connection.close()
 
 
 def _write_curation_settings(
