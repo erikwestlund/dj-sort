@@ -7,8 +7,10 @@ from typer.testing import CliRunner
 
 from dj_sort.cli import app
 from dj_sort.curation import CurationSyncResult, CurationTrack, TrackSyncPlan
+from dj_sort.lookup import ExternalLookupResult
 from dj_sort.metadata import TrackMetadata
-from dj_sort.navidrome import NavidromePlaylist, NavidromeScanStatus, NavidromeSong, filter_playlists
+from dj_sort.mixedinkey import MixedInKeyInfo
+from dj_sort.navidrome import NavidromePlaylist, NavidromeScanStatus, NavidromeSong, filter_playlists, playlist_cache_path, write_playlist_cache
 
 runner = CliRunner()
 
@@ -99,6 +101,114 @@ def test_categorize_current_uses_cached_number_selection(tmp_path: Path, monkeyp
     assert "Uncurated" not in list_result.stdout
     assert add_result.exit_code == 0
     assert fake.added == [("indie", "song-1")]
+
+
+def test_categorize_current_still_shows_playlists_when_now_playing_is_temporarily_unavailable(tmp_path: Path, monkeypatch) -> None:
+    settings_path = _write_settings(tmp_path)
+    fake = FakeNavidromeClient()
+    fake.now_playing = lambda: (_ for _ in ()).throw(ValueError("Navidrome has no current now-playing track"))  # type: ignore[method-assign]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dj_sort.cli._navidrome_client", lambda settings: fake)
+
+    result = runner.invoke(app, ["categorize-current", "Indie", "--settings", str(settings_path)])
+
+    assert result.exit_code == 0
+    assert "Current track: <unavailable:" in result.stdout
+    assert "1. Indie Picks" in result.stdout
+
+
+def test_list_playlists_uses_cache_when_playlist_fetch_fails(tmp_path: Path, monkeypatch) -> None:
+    settings_path = _write_settings(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cached = [NavidromePlaylist(id="cached", name="Cached Crate", song_count=2)]
+    write_playlist_cache(playlist_cache_path(settings_path), cached)
+    fake = FakeNavidromeClient()
+    fake.playlists = lambda: (_ for _ in ()).throw(ValueError("temporary API failure"))  # type: ignore[method-assign]
+    monkeypatch.setattr("dj_sort.cli._navidrome_client", lambda settings: fake)
+
+    result = runner.invoke(app, ["list-playlists", "Cached", "--settings", str(settings_path)])
+
+    assert result.exit_code == 0
+    assert "1. Cached Crate" in result.stdout
+    assert "using cached playlists" in result.stderr
+
+
+def test_lookup_current_shows_external_genre_hints(tmp_path: Path, monkeypatch) -> None:
+    settings_path = _write_settings(tmp_path)
+    genre_map = tmp_path / "genres.yaml"
+    genre_map.write_text("genres:\n  Electro House: Electro House\n", encoding="utf-8")
+    settings_path.write_text(
+        f"unprocessed_music_dir: {tmp_path / 'source'}\n"
+        f"genre_map_path: {genre_map}\n"
+        "navidrome:\n"
+        "  username: erik\n",
+        encoding="utf-8",
+    )
+    fake = FakeNavidromeClient()
+    fake.now_playing = lambda: NavidromeSong(  # type: ignore[method-assign]
+        id="song-1",
+        artist="Daft Punk",
+        title="Technologic (Vitalic Remix)",
+        path="Indie Dance/Daft Punk - Technologic.mp3",
+    )
+    lookups = [
+        ExternalLookupResult(
+            source="discogs",
+            suggested_genre="Electro House",
+            confidence="high",
+            terms=("Electro House", "House"),
+            notes="matched Daft Punk - Technologic",
+        )
+    ]
+    monkeypatch.setattr("dj_sort.cli._navidrome_client", lambda settings: fake)
+    monkeypatch.setattr("dj_sort.cli.lookup_external_genre_info_for_track", lambda *args, **kwargs: lookups)
+    monkeypatch.setattr("dj_sort.cli.discogs_token_available", lambda: True)
+
+    result = runner.invoke(app, ["lookup-current", "--settings", str(settings_path)])
+
+    assert result.exit_code == 0
+    assert "Now Playing: Daft Punk - Technologic (Vitalic Remix)" in result.stdout
+    assert "- Discogs: Electro House (high)" in result.stdout
+    assert "Terms: Electro House; House" in result.stdout
+
+
+def test_lookup_current_can_render_json(tmp_path: Path, monkeypatch) -> None:
+    settings_path = _write_settings(tmp_path)
+    fake = FakeNavidromeClient()
+    monkeypatch.setattr("dj_sort.cli._navidrome_client", lambda settings: fake)
+    monkeypatch.setattr("dj_sort.cli.lookup_external_genre_info_for_track", lambda *args, **kwargs: [])
+    monkeypatch.setattr("dj_sort.cli.discogs_token_available", lambda: False)
+
+    result = runner.invoke(app, ["lookup-current", "--settings", str(settings_path), "--format", "json"])
+
+    assert result.exit_code == 0
+    assert '"display_name": "Artist - Track"' in result.stdout
+    assert '"lookups": []' in result.stdout
+
+
+def test_current_track_info_shows_bpm_energy_key_and_comment(tmp_path: Path, monkeypatch) -> None:
+    settings_path = _write_settings(tmp_path)
+    track_path = tmp_path / "library" / "Artist - Track.mp3"
+    track_path.parent.mkdir(parents=True)
+    track_path.write_bytes(b"audio")
+    fake = FakeNavidromeClient()
+    monkeypatch.setattr("dj_sort.cli._navidrome_client", lambda settings: fake)
+    monkeypatch.setattr("dj_sort.cli._local_path_for_navidrome_song", lambda settings, path, song_id=None: track_path)
+    monkeypatch.setattr("dj_sort.cli.read_metadata", lambda path: _metadata(path, genre="House"))
+    monkeypatch.setattr("dj_sort.cli.read_original_genre_comment", lambda path, prefix: "Afro House")
+    monkeypatch.setattr(
+        "dj_sort.cli.read_mixed_in_key_info",
+        lambda path: MixedInKeyInfo(key="5A", bpm="128", energy="7", comment="5A - 128 - 7 - crate hint"),
+    )
+
+    result = runner.invoke(app, ["current-track-info", "--settings", str(settings_path)])
+
+    assert result.exit_code == 0
+    assert "BPM: 128" in result.stdout
+    assert "Energy: 7" in result.stdout
+    assert "Key: 5A" in result.stdout
+    assert "Comment: 5A - 128 - 7 - crate hint" in result.stdout
+    assert "Original Genre: Afro House" in result.stdout
 
 
 def test_new_playlist_creates_playlist(tmp_path: Path, monkeypatch) -> None:

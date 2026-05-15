@@ -23,11 +23,13 @@ from dj_sort.curation import CurationSyncResult, sync_navidrome_curation, sync_n
 from dj_sort.database import connect, duplicate_report, excluded_report, genre_id, initialize
 from dj_sort.genres import GenreMap
 from dj_sort.hashing import sha256_file
-from dj_sort.lookup import discogs_token_available, suggest_genre_for_track
-from dj_sort.metadata import read_metadata, write_genre
-from dj_sort.mixedinkey import MixedInKeyUpdate, apply_mixed_in_key_update
+from dj_sort.lookup import discogs_token_available, lookup_external_genre_info_for_track, suggest_genre_for_track
+from dj_sort.metadata import read_metadata, read_original_genre_comment, write_genre
+from dj_sort.mixedinkey import MixedInKeyUpdate, apply_mixed_in_key_update, read_mixed_in_key_info
 from dj_sort.navidrome import (
     NavidromeClient,
+    NavidromePlaylist,
+    NavidromeSong,
     filter_playlists,
     playlist_cache_path,
     rated_song_ids_from_database,
@@ -504,7 +506,7 @@ def list_playlists(
                 typer.echo(f"... {len(songs) - max_results} more")
             return
 
-        matches = filter_playlists(client.playlists(), target, _navidrome_excluded_playlist_prefixes(settings))
+        matches = _playlist_matches_with_cache_fallback(client, cache_path, settings, target)
     except Exception as exc:  # noqa: BLE001 - CLI should present concise API errors
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -530,33 +532,106 @@ def categorize_current(
     cache_path = playlist_cache_path(settings_path)
     try:
         client = _navidrome_client(settings)
-        song = client.now_playing()
         if target is not None and target.strip().isdigit():
+            song = client.now_playing()
             playlist = _playlist_from_cached_number(cache_path, int(target.strip()))
             added = client.add_to_playlist(playlist.id, song.id)
             action = "Added" if added else "Already in"
             typer.echo(f"{action} playlist '{playlist.name}': {song.display_name}")
             return
 
-        matches = filter_playlists(client.playlists(), target, _navidrome_excluded_playlist_prefixes(settings))
+        matches = _playlist_matches_with_cache_fallback(client, cache_path, settings, target)
         if target and len(matches) == 1 and matches[0].name.casefold() == target.strip().casefold():
+            song = client.now_playing()
             added = client.add_to_playlist(matches[0].id, song.id)
             action = "Added" if added else "Already in"
             typer.echo(f"{action} playlist '{matches[0].name}': {song.display_name}")
             return
+        try:
+            song = client.now_playing()
+            current_track = song.display_name
+        except Exception as exc:  # noqa: BLE001 - still show playlists when now-playing briefly races after rapid actions
+            current_track = f"<unavailable: {exc}>"
     except Exception as exc:  # noqa: BLE001 - CLI should present concise API errors
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
     shown = matches[:max_results]
     write_playlist_cache(cache_path, shown)
-    typer.echo(f"Current track: {song.display_name}")
+    typer.echo(f"Current track: {current_track}")
     typer.echo(f"Playlist matches: {len(matches)}")
     for index, playlist in enumerate(shown, start=1):
         count = f" ({playlist.song_count} tracks)" if playlist.song_count is not None else ""
         typer.echo(f"{index}. {playlist.name}{count}")
     if shown:
         typer.echo(f"Run again with a number, for example: dj-sort categorize-current 1 --settings {settings_path}")
+
+
+@app.command("lookup-current")
+def lookup_current(
+    settings_path: SettingsPath = Path("settings.yaml"),
+    output_format: OutputFormat = "text",
+    musicbrainz: Annotated[bool, typer.Option("--musicbrainz/--no-musicbrainz", help="Query MusicBrainz in addition to Discogs")] = True,
+) -> None:
+    """Show Discogs/MusicBrainz genre hints for the current Navidrome now-playing track."""
+    _validate_output_format(output_format)
+    settings = _load(settings_path)
+    try:
+        client = _navidrome_client(settings)
+        song = client.now_playing()
+        genre_map = GenreMap.load(settings.genre_map_path)
+        lookups = lookup_external_genre_info_for_track(
+            song.artist or "",
+            song.title,
+            genre_map,
+            musicbrainz=musicbrainz,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise API/filesystem errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    payload = _current_lookup_payload(song, lookups)
+    if output_format == "json":
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+    elif output_format == "yaml":
+        typer.echo(yaml.safe_dump(payload, sort_keys=True))
+    else:
+        _render_current_lookup_text(payload)
+
+
+@app.command("current-track-info")
+def current_track_info(
+    settings_path: SettingsPath = Path("settings.yaml"),
+    output_format: OutputFormat = "text",
+) -> None:
+    """Show local BPM, key, energy, and comment info for the current Navidrome track."""
+    _validate_output_format(output_format)
+    settings = _load(settings_path)
+    try:
+        song = _navidrome_client(settings).now_playing()
+        path = _local_path_for_navidrome_song(settings, song.path, song_id=song.id)
+        metadata = read_metadata(path)
+        mixed_in_key = read_mixed_in_key_info(path)
+        original_genre = read_original_genre_comment(path, settings.original_genre_comment_prefix)
+    except Exception as exc:  # noqa: BLE001 - CLI should present concise API/filesystem errors
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    payload = {
+        "track": song.display_name,
+        "path": str(path),
+        "bpm": mixed_in_key.bpm if mixed_in_key else metadata.bpm,
+        "energy": mixed_in_key.energy if mixed_in_key else None,
+        "key": mixed_in_key.key if mixed_in_key else metadata.camelot_key or metadata.raw_key,
+        "original_genre": original_genre,
+        "comment": mixed_in_key.comment or mixed_in_key.normalized_comment if mixed_in_key else None,
+    }
+    if output_format == "json":
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+    elif output_format == "yaml":
+        typer.echo(yaml.safe_dump(payload, sort_keys=True))
+    else:
+        typer.echo(_current_track_info_summary(payload))
 
 
 @app.command("re-genre-current")
@@ -1213,11 +1288,87 @@ def _navidrome_excluded_playlist_prefixes(settings: Settings) -> tuple[str, ...]
     return tuple(dict.fromkeys(prefixes))
 
 
+def _playlist_matches_with_cache_fallback(
+    client: NavidromeClient,
+    cache_path: Path,
+    settings: Settings,
+    target: str | None,
+) -> list[NavidromePlaylist]:
+    try:
+        playlists = client.playlists()
+    except Exception as exc:  # noqa: BLE001 - cache keeps classify UI usable during transient API hiccups
+        try:
+            typer.echo(f"Warning: using cached playlists after Navidrome playlist fetch failed: {exc}", err=True)
+            playlists = read_playlist_cache(cache_path)
+        except FileNotFoundError as cache_exc:
+            raise exc from cache_exc
+    return filter_playlists(playlists, target, _navidrome_excluded_playlist_prefixes(settings))
+
+
 def _playlist_from_cached_number(cache_path: Path, number: int):
     playlists = read_playlist_cache(cache_path)
     if number < 1 or number > len(playlists):
         raise ValueError(f"Playlist number {number} is out of range for cached results at {cache_path}")
     return playlists[number - 1]
+
+
+def _current_lookup_payload(song: NavidromeSong, lookups) -> dict[str, object]:
+    return {
+        "track": {
+            "id": song.id,
+            "artist": song.artist,
+            "title": song.title,
+            "path": song.path,
+            "display_name": song.display_name,
+        },
+        "discogs_available": discogs_token_available(),
+        "lookups": [
+            {
+                "source": lookup.source,
+                "suggested_genre": lookup.suggested_genre,
+                "confidence": lookup.confidence,
+                "terms": list(lookup.terms),
+                "notes": lookup.notes,
+            }
+            for lookup in lookups
+        ],
+    }
+
+
+def _render_current_lookup_text(payload: dict[str, object]) -> None:
+    track = payload["track"]
+    assert isinstance(track, dict)
+    typer.echo(f"Now Playing: {track['display_name']}")
+    if not payload["discogs_available"]:
+        typer.echo("Discogs: not configured; set DISCOGS_TOKEN for Discogs style data")
+    lookups = payload["lookups"]
+    assert isinstance(lookups, list)
+    if not lookups:
+        typer.echo("External lookup: no Discogs/MusicBrainz genre hints found")
+        return
+    typer.echo("External lookup:")
+    for row in lookups:
+        assert isinstance(row, dict)
+        genre = row["suggested_genre"] or "<no local genre match>"
+        typer.echo(f"- {str(row['source']).title()}: {genre} ({row['confidence']})")
+        terms = row.get("terms") or []
+        if terms:
+            typer.echo(f"  Terms: {'; '.join(str(term) for term in terms)}")
+        if row.get("notes"):
+            typer.echo(f"  Notes: {row['notes']}")
+
+
+def _current_track_info_summary(payload: dict[str, object]) -> str:
+    parts = [
+        f"BPM: {payload.get('bpm') or '?'}",
+        f"Energy: {payload.get('energy') or '?'}",
+        f"Key: {payload.get('key') or '?'}",
+    ]
+    if payload.get("comment"):
+        parts.append(f"Comment: {payload['comment']}")
+    if payload.get("original_genre"):
+        parts.append(f"Original Genre: {payload['original_genre']}")
+    return " | ".join(parts)
 
 
 def _resolve_target_genre(settings: Settings, target_genre: str) -> str:

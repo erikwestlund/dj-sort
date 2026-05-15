@@ -185,6 +185,17 @@ def original_genre_comment(
     return f"{prefix.rstrip()} {cleaned_original}"
 
 
+def read_original_genre_comment(path: Path, prefix: str = "dj-sort original genre:") -> str | None:
+    cleaned_prefix = prefix.strip()
+    if not cleaned_prefix:
+        return None
+    for comment in _comments(path):
+        cleaned = comment.strip()
+        if cleaned.casefold().startswith(cleaned_prefix.casefold()):
+            return cleaned[len(cleaned_prefix) :].strip() or None
+    return None
+
+
 def _append_easy_comment(audio: Any, comment: str) -> None:
     existing = [str(value) for value in audio.get("comment", [])]
     if comment not in existing:
@@ -200,6 +211,34 @@ def _append_id3_comment(path: Path, comment: str) -> None:
     if comment not in existing:
         tags.add(COMM(encoding=3, lang="eng", desc="dj-sort", text=[comment]))
     tags.save(path)
+
+
+def _comments(path: Path) -> list[str]:
+    comments: list[str] = []
+    try:
+        audio = File(path, easy=True)
+    except Exception:  # noqa: BLE001 - malformed optional tags should not block UI hints
+        audio = None
+    if audio is not None and audio.tags is not None:
+        comments.extend(str(value) for value in audio.tags.get("comment", []) if value)
+
+    try:
+        raw = File(path)
+    except Exception:  # noqa: BLE001 - malformed optional tags should not block UI hints
+        raw = None
+    tags = raw.tags if raw is not None and raw.tags is not None else {}
+    if hasattr(tags, "getall"):
+        comments.extend(str(text) for frame in tags.getall("COMM") for text in frame.text if text)
+    if path.suffix.casefold() == ".mp3" and not comments:
+        try:
+            id3_tags = ID3(path)
+        except ID3NoHeaderError:
+            id3_tags = None
+        if id3_tags is not None:
+            comments.extend(str(text) for frame in id3_tags.getall("COMM") for text in frame.text if text)
+    if path.suffix.casefold() in {".m4a", ".aac", ".alac"}:
+        comments.extend(str(value) for value in tags.get("\xa9cmt", []) if value)
+    return list(dict.fromkeys(comments))
 
 
 def _mp3_id3_tags(path: Path) -> dict[str, list[str]]:

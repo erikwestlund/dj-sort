@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,6 +78,15 @@ class LookupSuggestion:
     notes: str = ""
 
 
+@dataclass(frozen=True)
+class ExternalLookupResult:
+    source: str
+    suggested_genre: str | None
+    confidence: str
+    terms: tuple[str, ...]
+    notes: str = ""
+
+
 def suggest_genre_for_track(
     artist: str,
     title: str,
@@ -87,32 +97,77 @@ def suggest_genre_for_track(
     musicbrainz_fallback: bool = True,
 ) -> LookupSuggestion | None:
     """Return a best-effort external genre suggestion without modifying local files."""
+    results = lookup_external_genre_info_for_track(
+        artist,
+        title,
+        genre_map,
+        discogs_token=discogs_token,
+        sleep_seconds=sleep_seconds,
+        musicbrainz=musicbrainz_fallback,
+    )
+    for result in results:
+        if result.suggested_genre:
+            return LookupSuggestion(
+                genre=result.suggested_genre,
+                confidence=result.confidence,
+                source=result.source,
+                terms=result.terms,
+                notes=result.notes,
+            )
+    return None
+
+
+def lookup_external_genre_info_for_track(
+    artist: str,
+    title: str,
+    genre_map: GenreMap,
+    *,
+    discogs_token: str | None = None,
+    sleep_seconds: float = 0.0,
+    musicbrainz: bool = True,
+) -> list[ExternalLookupResult]:
+    """Return display-oriented Discogs/MusicBrainz style info for one track."""
     _load_local_env()
     cleaned_artist = normalize_text(artist)
     cleaned_title = _strip_key_suffix(normalize_text(title))
     if not cleaned_artist or not cleaned_title:
-        return None
+        return []
 
+    results = []
     discogs_auth = _discogs_auth(discogs_token)
     if discogs_auth:
-        suggestion = _discogs_suggestion(cleaned_artist, cleaned_title, genre_map, discogs_auth)
-        if suggestion:
+        for title_variant in _lookup_title_variants(cleaned_title):
+            result = _discogs_lookup(cleaned_artist, title_variant, genre_map, discogs_auth)
+            if result:
+                results.append(result)
+                break
+        if sleep_seconds:
             time.sleep(sleep_seconds)
-            return suggestion
-        time.sleep(sleep_seconds)
 
-    if musicbrainz_fallback:
-        return _musicbrainz_suggestion(cleaned_artist, cleaned_title, genre_map)
-    return None
+    if musicbrainz:
+        for title_variant in _lookup_title_variants(cleaned_title):
+            result = _musicbrainz_lookup(cleaned_artist, title_variant, genre_map)
+            if result:
+                results.append(result)
+                break
+    return results
 
 
 def _discogs_suggestion(artist: str, title: str, genre_map: GenreMap, auth: dict[str, str]) -> LookupSuggestion | None:
-    params = {"artist": artist, "track": title, "type": "release", "per_page": "5"}
-    params.update(auth.get("params", {}))
-    data = _json_get(
-        f"https://api.discogs.com/database/search?{urlencode(params)}",
-        headers={**auth.get("headers", {}), "User-Agent": USER_AGENT},
+    result = _discogs_lookup(artist, title, genre_map, auth)
+    if not result or not result.suggested_genre:
+        return None
+    return LookupSuggestion(
+        genre=result.suggested_genre,
+        confidence=result.confidence,
+        source=result.source,
+        terms=result.terms,
+        notes=result.notes,
     )
+
+
+def _discogs_lookup(artist: str, title: str, genre_map: GenreMap, auth: dict[str, str]) -> ExternalLookupResult | None:
+    data = _discogs_search(artist, title, auth)
     if not data:
         return None
 
@@ -128,13 +183,41 @@ def _discogs_suggestion(artist: str, title: str, genre_map: GenreMap, auth: dict
     candidates.sort(reverse=True, key=lambda item: item[0])
     score, terms, matched_title = candidates[0]
     genre = _best_local_genre(terms, genre_map)
-    if not genre:
-        return None
     confidence = "high" if score >= 2 else "medium"
-    return LookupSuggestion(genre=genre, confidence=confidence, source="discogs", terms=terms, notes=f"matched {matched_title}")
+    return ExternalLookupResult(source="discogs", suggested_genre=genre, confidence=confidence, terms=terms, notes=f"matched {matched_title}")
+
+
+def _discogs_search(artist: str, title: str, auth: dict[str, str]) -> dict | None:
+    for params in [
+        {"artist": artist, "track": title, "type": "release", "per_page": "5"},
+        {"artist": artist, "release_title": title, "type": "release", "per_page": "5"},
+        {"artist": artist, "title": title, "type": "release", "per_page": "5"},
+        {"q": f"{artist} {title}", "type": "release", "per_page": "5"},
+    ]:
+        params.update(auth.get("params", {}))
+        data = _json_get(
+            f"https://api.discogs.com/database/search?{urlencode(params)}",
+            headers={**auth.get("headers", {}), "User-Agent": USER_AGENT},
+        )
+        if data and data.get("results"):
+            return data
+    return None
 
 
 def _musicbrainz_suggestion(artist: str, title: str, genre_map: GenreMap) -> LookupSuggestion | None:
+    result = _musicbrainz_lookup(artist, title, genre_map)
+    if not result or not result.suggested_genre:
+        return None
+    return LookupSuggestion(
+        genre=result.suggested_genre,
+        confidence=result.confidence,
+        source=result.source,
+        terms=result.terms,
+        notes=result.notes,
+    )
+
+
+def _musicbrainz_lookup(artist: str, title: str, genre_map: GenreMap) -> ExternalLookupResult | None:
     query = f'artist:"{artist}" AND recording:"{title}"'
     params = urlencode({"query": query, "fmt": "json", "limit": 5, "inc": "tags"})
     data = _json_get(f"https://musicbrainz.org/ws/2/recording/?{params}", headers={"User-Agent": USER_AGENT})
@@ -153,10 +236,8 @@ def _musicbrainz_suggestion(artist: str, title: str, genre_map: GenreMap) -> Loo
     candidates.sort(reverse=True, key=lambda item: item[0])
     score, terms, matched_title = candidates[0]
     genre = _best_local_genre(terms, genre_map)
-    if not genre:
-        return None
     confidence = "medium" if score >= 90 else "low"
-    return LookupSuggestion(genre=genre, confidence=confidence, source="musicbrainz", terms=terms, notes=f"matched {matched_title}")
+    return ExternalLookupResult(source="musicbrainz", suggested_genre=genre, confidence=confidence, terms=terms, notes=f"matched {matched_title}")
 
 
 def _best_local_genre(terms: tuple[str, ...], genre_map: GenreMap) -> str | None:
@@ -178,7 +259,7 @@ def _best_local_genre(terms: tuple[str, ...], genre_map: GenreMap) -> str | None
 
 
 def _match_score(result_title: str, artist: str, title: str) -> int:
-    normalized_result = normalize_key(_strip_key_suffix(result_title))
+    normalized_result = normalize_key(result_title)
     score = 0
     if normalize_key(artist) in normalized_result:
         score += 1
@@ -189,6 +270,17 @@ def _match_score(result_title: str, artist: str, title: str) -> int:
 
 def _strip_key_suffix(title: str) -> str:
     return normalize_text(title.rsplit(" - ", 1)[0]) if " - " in title else title
+
+
+def _lookup_title_variants(title: str) -> tuple[str, ...]:
+    variants = [title]
+    without_parenthetical_suffix = re.sub(r"\s*\([^)]*\)\s*$", "", title).strip()
+    if without_parenthetical_suffix:
+        variants.append(without_parenthetical_suffix)
+    for separator in [" / ", " feat. ", " ft. "]:
+        if separator in title:
+            variants.append(title.split(separator, 1)[0].strip())
+    return tuple(dict.fromkeys(variant for variant in variants if variant))
 
 
 def _json_get(url: str, *, headers: dict[str, str]) -> dict | None:

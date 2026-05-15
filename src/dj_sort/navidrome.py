@@ -4,6 +4,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,20 +48,27 @@ class NavidromeClient:
         password: str,
         api_version: str = "1.16.1",
         client_name: str = "dj-sort",
+        retry_count: int = 3,
+        retry_delay_seconds: float = 0.25,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
         self.api_version = api_version
         self.client_name = client_name
+        self.retry_count = retry_count
+        self.retry_delay_seconds = retry_delay_seconds
 
     def now_playing(self) -> NavidromeSong:
-        payload = self._request("getNowPlaying")
-        entries = _as_list(payload.get("nowPlaying", {}).get("entry"))
-        if not entries:
-            raise ValueError("Navidrome has no current now-playing track")
-        matching_user = [entry for entry in entries if entry.get("username") == self.username]
-        return _song_from_payload((matching_user or entries)[0])
+        for attempt in range(self.retry_count):
+            payload = self._request("getNowPlaying")
+            entries = _as_list(payload.get("nowPlaying", {}).get("entry"))
+            if entries:
+                matching_user = [entry for entry in entries if entry.get("username") == self.username]
+                return _song_from_payload((matching_user or entries)[0])
+            if attempt < self.retry_count - 1:
+                time.sleep(self.retry_delay_seconds)
+        raise ValueError("Navidrome has no current now-playing track")
 
     def set_rating(self, song_id: str, rating: int) -> None:
         self._request("setRating", {"id": song_id, "rating": str(rating)})
@@ -130,13 +138,18 @@ class NavidromeClient:
             **(params or {}),
         }
         url = f"{self.base_url}/rest/{endpoint}.view?{urlencode(query)}"
-        try:
-            with urlopen(url, timeout=15) as response:  # noqa: S310 - configured local Navidrome endpoint
-                data = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            raise ValueError(f"Navidrome API error {exc.code}: {exc.reason}") from exc
-        except URLError as exc:
-            raise ValueError(f"Navidrome API connection failed: {exc.reason}") from exc
+        for attempt in range(self.retry_count):
+            try:
+                with urlopen(url, timeout=15) as response:  # noqa: S310 - configured local Navidrome endpoint
+                    data = json.loads(response.read().decode("utf-8"))
+                break
+            except HTTPError as exc:
+                if exc.code not in {408, 429} and exc.code < 500 or attempt == self.retry_count - 1:
+                    raise ValueError(f"Navidrome API error {exc.code}: {exc.reason}") from exc
+            except URLError as exc:
+                if attempt == self.retry_count - 1:
+                    raise ValueError(f"Navidrome API connection failed: {exc.reason}") from exc
+            time.sleep(self.retry_delay_seconds)
 
         envelope = data.get("subsonic-response", {})
         if envelope.get("status") == "failed":
